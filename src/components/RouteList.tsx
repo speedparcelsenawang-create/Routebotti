@@ -2193,7 +2193,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
       setCodeError("")
       setAddPointDialogOpen(false)
       toast.success("Location added", {
-        description: `${label} · ${newPoint.delivery} · remember to save`,
+        description: `${label} · ${getDeliveryLabel(newPoint.delivery)} · remember to save`,
         icon: <MapPin className="size-3.5 text-primary" />,
         duration: 3000,
       })
@@ -4148,7 +4148,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
                             onChange={(e) => setNewPoint({ ...newPoint, delivery: e.target.value })}
                           >
                             {getAvailableDeliveryLabels(currentRoute).map(lbl => (
-                              <option key={lbl} value={lbl}>{lbl}</option>
+                              <option key={lbl} value={lbl}>{getDeliveryLabel(lbl)}</option>
                             ))}
                           </select>
                         </div>

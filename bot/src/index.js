@@ -580,7 +580,7 @@ async function sendLocationLinksWithFallback(sock, jid, links, textBody = '') {
     const chunk = messageChunks[i];
     const intro = i === 0
       ? (textBody || 'Pilih link di bawah:')
-      : 'Pilihan link tambahan:';
+      : 'Scan QR untuk daftar masuk , tekan button di bawah';
     try {
       const messagePayload = useInteractiveButtons
         ? {
