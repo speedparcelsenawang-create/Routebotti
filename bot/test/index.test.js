@@ -1,9 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import JSZip from 'jszip';
 import sharp from 'sharp';
 
 import { unzipTextFromBase64 } from '../src/zip.js';
 import { buildTtsAudioMessage, executeCommand, normalizePhoneNumber } from '../src/index.js';
+
+async function createSolidImage(color) {
+  return sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: color,
+    },
+  }).jpeg().toBuffer();
+}
 
 test('accepts dot-prefixed numeric location commands', async () => {
   const reply = await executeCommand('.33', {
@@ -223,6 +235,80 @@ test('zip command can read quoted media caption', async () => {
   assert.equal(unzipTextFromBase64(reply.payload), 'Teks dari media');
 });
 
+test('zip command can archive multiple media attachments', async () => {
+  const currentImage = await createSolidImage({ r: 0, g: 0, b: 255 });
+  const quotedImage = await createSolidImage({ r: 255, g: 0, b: 0 });
+
+  const reply = await executeCommand('.zip', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      if (media?.url === 'current-image') return currentImage;
+      if (media?.url === 'quoted-image') return quotedImage;
+      return null;
+    },
+  }, {
+    imageMessage: {
+      url: 'current-image',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'quoted-image',
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'zip-file');
+  assert.ok(Buffer.isBuffer(reply.document));
+
+  const zip = await JSZip.loadAsync(reply.document);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['quoted-image-2.jpg', 'quoted-image.jpg']);
+});
+
+test('pdf command includes current and quoted images on separate pages', async () => {
+  const currentImage = await createSolidImage({ r: 0, g: 128, b: 255 });
+  const quotedImage = await createSolidImage({ r: 255, g: 128, b: 0 });
+
+  const reply = await executeCommand('.pdf', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      if (media?.url === 'current-image') return currentImage;
+      if (media?.url === 'quoted-image') return quotedImage;
+      return null;
+    },
+  }, {
+    imageMessage: {
+      url: 'current-image',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'quoted-image',
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'document');
+  assert.equal(reply.mimetype, 'application/pdf');
+  assert.ok(Buffer.isBuffer(reply.document));
+
+  const pdfText = reply.document.toString('latin1');
+  const pageMatches = pdfText.match(/\/Type \/Page\b/g) || [];
+  assert.equal(pageMatches.length, 2);
+});
+
 test('grid command builds a single-tile image when one image is provided', async () => {
   const sourceImage = await sharp({
     create: {
@@ -315,32 +401,9 @@ test('grid command combines current and quoted image side by side', async () => 
 });
 
 test('grid command combines 3 images with two on top and one at bottom', async () => {
-  const imageA = await sharp({
-    create: {
-      width: 120,
-      height: 120,
-      channels: 3,
-      background: { r: 0, g: 255, b: 255 },
-    },
-  }).jpeg().toBuffer();
-
-  const imageB = await sharp({
-    create: {
-      width: 120,
-      height: 120,
-      channels: 3,
-      background: { r: 255, g: 255, b: 0 },
-    },
-  }).jpeg().toBuffer();
-
-  const imageC = await sharp({
-    create: {
-      width: 120,
-      height: 120,
-      channels: 3,
-      background: { r: 255, g: 0, b: 255 },
-    },
-  }).jpeg().toBuffer();
+  const imageA = await createSolidImage({ r: 0, g: 255, b: 255 });
+  const imageB = await createSolidImage({ r: 255, g: 255, b: 0 });
+  const imageC = await createSolidImage({ r: 255, g: 0, b: 255 });
 
   const reply = await executeCommand('.grid', {
     commandPrefix: '.',
@@ -382,6 +445,95 @@ test('grid command combines 3 images with two on top and one at bottom', async (
   const meta = await sharp(reply.imageBuffer).metadata();
   assert.equal(meta.width, 1440);
   assert.equal(meta.height, 1440);
+});
+
+test('grid command keeps rendering when more than six images are supplied', async () => {
+  const imageBuffers = await Promise.all([
+    { r: 0, g: 0, b: 0 },
+    { r: 32, g: 32, b: 32 },
+    { r: 64, g: 64, b: 64 },
+    { r: 96, g: 96, b: 96 },
+    { r: 128, g: 128, b: 128 },
+    { r: 160, g: 160, b: 160 },
+    { r: 192, g: 192, b: 192 },
+  ].map((color) => createSolidImage(color)));
+
+  const [imageA, imageB, imageC, imageD, imageE, imageF, imageG] = imageBuffers;
+
+  const reply = await executeCommand('.grid', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      const bufferMap = {
+        'image-a': imageA,
+        'image-b': imageB,
+        'image-c': imageC,
+        'image-d': imageD,
+        'image-e': imageE,
+        'image-f': imageF,
+        'image-g': imageG,
+      };
+      return bufferMap[media?.url] || null;
+    },
+  }, {
+    imageMessage: {
+      caption: '.grid',
+      url: 'image-a',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'image-b',
+            contextInfo: {
+              quotedMessage: {
+                imageMessage: {
+                  url: 'image-c',
+                  contextInfo: {
+                    quotedMessage: {
+                      imageMessage: {
+                        url: 'image-d',
+                        contextInfo: {
+                          quotedMessage: {
+                            imageMessage: {
+                              url: 'image-e',
+                              contextInfo: {
+                                quotedMessage: {
+                                  imageMessage: {
+                                    url: 'image-f',
+                                    contextInfo: {
+                                      quotedMessage: {
+                                        imageMessage: {
+                                          url: 'image-g',
+                                        },
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'image-grid');
+  assert.ok(Buffer.isBuffer(reply.imageBuffer));
+
+  const meta = await sharp(reply.imageBuffer).metadata();
+  assert.equal(meta.width, 1440);
+  assert.equal(meta.height, 2880);
 });
 
 test('grid command asks for image with caption when current image is missing', async () => {

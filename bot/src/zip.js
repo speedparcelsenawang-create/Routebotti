@@ -11,6 +11,36 @@ function normalizeArchiveEntryName(value) {
   return cleaned || 'attachment.bin';
 }
 
+function splitArchiveEntryName(value) {
+  const normalized = normalizeArchiveEntryName(value);
+  const lastDotIndex = normalized.lastIndexOf('.');
+
+  if (lastDotIndex <= 0 || lastDotIndex === normalized.length - 1) {
+    return { stem: normalized, extension: '' };
+  }
+
+  return {
+    stem: normalized.slice(0, lastDotIndex),
+    extension: normalized.slice(lastDotIndex),
+  };
+}
+
+function buildUniqueArchiveEntryName(baseName, index, usedNames) {
+  const normalizedBaseName = normalizeArchiveEntryName(baseName);
+  const { stem, extension } = splitArchiveEntryName(normalizedBaseName);
+
+  let candidate = index === 0 ? normalizedBaseName : `${stem}-${index + 1}${extension}`;
+  let suffix = index + 2;
+
+  while (usedNames.has(candidate)) {
+    candidate = `${stem}-${suffix}${extension}`;
+    suffix += 1;
+  }
+
+  usedNames.add(candidate);
+  return candidate;
+}
+
 export function zipTextToBase64(text) {
   const input = String(text || '').trim();
   if (!input) {
@@ -91,12 +121,38 @@ export function buildUnzipCommandReply(payload) {
 }
 
 export async function buildZipArchiveBuffer(contentBuffer, entryName = 'attachment.bin') {
-  if (!Buffer.isBuffer(contentBuffer) || contentBuffer.length === 0) {
+  const zip = new JSZip();
+
+  const entries = Buffer.isBuffer(contentBuffer)
+    ? [{ buffer: contentBuffer, entryName }]
+    : Array.isArray(contentBuffer)
+      ? contentBuffer
+      : [];
+
+  const usedNames = new Set();
+  let addedEntries = 0;
+
+  entries.forEach((item, index) => {
+    const buffer = Buffer.isBuffer(item)
+      ? item
+      : Buffer.isBuffer(item?.buffer)
+        ? item.buffer
+        : null;
+
+    if (!buffer || buffer.length === 0) {
+      return;
+    }
+
+    const requestedName = Buffer.isBuffer(item) ? entryName : item?.entryName;
+    const normalizedName = buildUniqueArchiveEntryName(requestedName || entryName, index, usedNames);
+    zip.file(normalizedName, buffer);
+    addedEntries += 1;
+  });
+
+  if (addedEntries === 0) {
     return null;
   }
 
-  const zip = new JSZip();
-  zip.file(normalizeArchiveEntryName(entryName), contentBuffer);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 

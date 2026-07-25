@@ -632,6 +632,23 @@ function getAllQuotedMediaMessages(message) {
   return results;
 }
 
+function collectMediaMessages(message) {
+  const results = [];
+  const seenMediaRefs = new WeakSet();
+
+  const pushMedia = (item) => {
+    if (!item || !item.media || typeof item.media !== 'object') return;
+    if (seenMediaRefs.has(item.media)) return;
+    seenMediaRefs.add(item.media);
+    results.push(item);
+  };
+
+  pushMedia(getMessageMedia(message));
+  getAllQuotedMediaMessages(message).forEach(pushMedia);
+
+  return results;
+}
+
 function isViewOnceMedia(media) {
   return Boolean(media?.viewOnce || media?.isViewOnce || media?.viewOnceMessage);
 }
@@ -1380,8 +1397,8 @@ export async function executeCommand(text, runtime, message = null) {
 
   if (command === 'pdf') {
     const textContent = arg || quotedText || '';
-    const allQuotedMedia = getAllQuotedMediaMessages(message);
-    const supportedMedia = allQuotedMedia.filter((item) => item.mediaType === 'image');
+    const mediaItems = collectMediaMessages(message);
+    const supportedMedia = mediaItems.filter((item) => item.mediaType === 'image');
 
     const imageBuffers = [];
     for (const item of supportedMedia) {
@@ -1407,20 +1424,24 @@ export async function executeCommand(text, runtime, message = null) {
       if (imageBuffers.length > 0) {
         imageBuffers.forEach((imageBuffer, index) => {
           try {
-            doc.image(Buffer.from(imageBuffer), {
-              fit: [500, 250],
+            if (textContent || index > 0) {
+              doc.addPage();
+            }
+
+            doc.image(Buffer.from(imageBuffer), doc.page.margins.left, doc.page.margins.top, {
+              fit: [
+                doc.page.width - doc.page.margins.left - doc.page.margins.right,
+                doc.page.height - doc.page.margins.top - doc.page.margins.bottom,
+              ],
               align: 'center',
               valign: 'center',
             });
-            if (index < imageBuffers.length - 1) {
-              doc.moveDown(0.7);
-            }
           } catch (error) {
             console.warn('Failed to embed image into PDF:', error);
             doc.fontSize(10).text('Satu atau lebih gambar tidak dapat dimasukkan ke dalam PDF.', { align: 'left' });
           }
         });
-      } else if (allQuotedMedia.length > 0) {
+      } else if (mediaItems.length > 0) {
         doc.fontSize(10).text('Hanya gambar yang disokong untuk PDF. Video tidak dimasukkan.', { align: 'left' });
       }
 
@@ -1465,26 +1486,14 @@ export async function executeCommand(text, runtime, message = null) {
   }
 
   if (command === 'grid') {
-    const imageMedias = [];
-    const seenMediaRefs = new WeakSet();
-    const pushImageMedia = (item) => {
-      if (!item || item.mediaType !== 'image' || !item.media || typeof item.media !== 'object') return;
-      if (seenMediaRefs.has(item.media)) return;
-      seenMediaRefs.add(item.media);
-      imageMedias.push(item);
-    };
-
-    pushImageMedia(getMessageMedia(message));
-
-    const allQuotedMedia = getAllQuotedMediaMessages(message);
-    allQuotedMedia.forEach(pushImageMedia);
+    const imageMedias = collectMediaMessages(message).filter((item) => item.mediaType === 'image');
 
     if (imageMedias.length === 0) {
       return `Sila hantar gambar bersama caption ${commandPrefix}grid atau reply gambar lain untuk digabungkan.`;
     }
 
     const imageBuffers = [];
-    for (const imageMedia of imageMedias.slice(0, 6)) {
+    for (const imageMedia of imageMedias) {
       const imageBuffer = await quotedMediaDownloader(imageMedia.media, imageMedia.mediaType);
       if (imageBuffer) {
         imageBuffers.push(imageBuffer);
@@ -1499,12 +1508,25 @@ export async function executeCommand(text, runtime, message = null) {
   }
 
   if (command === 'zip') {
-    if (!arg && quotedMedia) {
-      const mediaBuffer = await quotedMediaDownloader(quotedMedia.media, quotedMedia.mediaType);
-      if (mediaBuffer) {
-        const entryName = getQuotedMediaFileName(quotedMedia.mediaType, quotedMedia.media);
-        const archiveName = `${entryName.replace(/\.[^.]+$/, '')}.zip`;
-        return buildZipMediaCommandReply(mediaBuffer, entryName, archiveName);
+    const mediaItems = collectMediaMessages(message);
+
+    if (!arg && mediaItems.length > 0) {
+      const archiveEntries = [];
+
+      for (const mediaItem of mediaItems) {
+        const mediaBuffer = await quotedMediaDownloader(mediaItem.media, mediaItem.mediaType);
+        if (mediaBuffer) {
+          archiveEntries.push({
+            buffer: mediaBuffer,
+            entryName: getQuotedMediaFileName(mediaItem.mediaType, mediaItem.media),
+          });
+        }
+      }
+
+      if (archiveEntries.length > 0) {
+        const firstEntryName = archiveEntries[0].entryName || 'attachment.bin';
+        const archiveName = `${firstEntryName.replace(/\.[^.]+$/, '')}.zip`;
+        return buildZipMediaCommandReply(archiveEntries, firstEntryName, archiveName);
       }
     }
 

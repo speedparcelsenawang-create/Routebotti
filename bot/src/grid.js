@@ -1,7 +1,6 @@
 import sharp from 'sharp';
 
 const CELL_SIZE = 720;
-const MAX_IMAGES = 6;
 const BACKGROUND_COLOR = { r: 255, g: 255, b: 255, alpha: 1 };
 
 async function normalizeImageForGrid(imageBuffer, width = CELL_SIZE, height = CELL_SIZE) {
@@ -90,11 +89,10 @@ export async function buildImageGridCommandReply(imageBuffers) {
   }
 
   try {
-    const selectedImages = sourceImages.slice(0, MAX_IMAGES);
-    const layout = buildLayoutSlots(selectedImages.length);
+    const layout = buildLayoutSlots(sourceImages.length);
 
     const normalizedImages = await Promise.all(
-      selectedImages.map((imageBuffer, index) => {
+      sourceImages.map((imageBuffer, index) => {
         const slot = layout.slots[index];
         return normalizeImageForGrid(imageBuffer, slot.width, slot.height);
       }),

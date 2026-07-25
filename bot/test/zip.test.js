@@ -44,3 +44,17 @@ test('buildZipArchiveBuffer creates a valid zip archive', async () => {
   assert.deepEqual(Object.keys(zip.files), ['photo.jpg']);
   assert.equal(await zip.file('photo.jpg').async('string'), 'hello world');
 });
+
+test('buildZipArchiveBuffer supports multiple media entries with unique names', async () => {
+  const archiveBuffer = await buildZipArchiveBuffer([
+    { buffer: Buffer.from('first'), entryName: 'photo.jpg' },
+    { buffer: Buffer.from('second'), entryName: 'photo.jpg' },
+  ]);
+
+  assert.ok(Buffer.isBuffer(archiveBuffer));
+
+  const zip = await JSZip.loadAsync(archiveBuffer);
+  assert.deepEqual(Object.keys(zip.files).sort(), ['photo-2.jpg', 'photo.jpg']);
+  assert.equal(await zip.file('photo.jpg').async('string'), 'first');
+  assert.equal(await zip.file('photo-2.jpg').async('string'), 'second');
+});
