@@ -158,9 +158,24 @@ const logger = pino({ level: 'info' });
 function getTextMessageContent(message) {
   if (!message) return '';
 
+  const interactiveResponse = message.interactiveResponseMessage;
+  const nativeFlowResponseJson = interactiveResponse?.nativeFlowResponseMessage?.paramsJson;
+  if (nativeFlowResponseJson) {
+    try {
+      const parsed = JSON.parse(nativeFlowResponseJson);
+      const selectedId = String(parsed?.id || '').trim();
+      if (selectedId) return selectedId;
+    } catch {
+      // Ignore invalid native flow payload and continue fallback parsing.
+    }
+  }
+
   return (
     message.conversation
     || message.extendedTextMessage?.text
+    || message.buttonsResponseMessage?.selectedButtonId
+    || message.templateButtonReplyMessage?.selectedId
+    || interactiveResponse?.body?.text
     || message.imageMessage?.caption
     || message.videoMessage?.caption
     || message.documentMessage?.caption
@@ -516,6 +531,34 @@ function buildLocationMessage(summary, descriptions) {
   ].join('\n');
 }
 
+function buildSharedCommandListUrl(appBaseUrl) {
+  const fallback = '/#page=bot-command&shared=bot-command';
+  if (!appBaseUrl) return fallback;
+
+  try {
+    const url = new URL(appBaseUrl);
+    url.hash = 'page=bot-command&shared=bot-command';
+    return url.toString();
+  } catch {
+    return `${String(appBaseUrl).replace(/\/$/, '')}${fallback}`;
+  }
+}
+
+function buildCommandNotFoundReply(commandPrefix, appBaseUrl) {
+  const openInWebUrl = buildSharedCommandListUrl(appBaseUrl);
+  return {
+    type: 'command-not-found',
+    commandPrefix,
+    openInWebUrl,
+    text: [
+      'Command not found.',
+      '',
+      'Klik button di bawah untuk lihat semua command:',
+      '[ Help ] [ Open in web ]',
+    ].join('\n'),
+  };
+}
+
 export function buildTtsAudioMessage(audioBuffer) {
   return {
     audio: audioBuffer,
@@ -524,7 +567,7 @@ export function buildTtsAudioMessage(audioBuffer) {
   };
 }
 
-async function sendLocationLinksWithFallback(sock, jid, quotedMessage, links, textBody = '') {
+async function sendLocationLinksWithFallback(sock, jid, links, textBody = '') {
   if (links.length === 0) return true;
 
   const messageChunks = chunkLinksForButtons(links);
@@ -562,11 +605,7 @@ async function sendLocationLinksWithFallback(sock, jid, quotedMessage, links, te
             })),
           };
 
-      await sock.sendMessage(
-        jid,
-        messagePayload,
-        { quoted: quotedMessage },
-      );
+      await sock.sendMessage(jid, messagePayload);
       sentButtons = true;
     } catch (error) {
       console.warn('Failed to send interactive buttons, fallback to text links:', error);
@@ -579,17 +618,13 @@ async function sendLocationLinksWithFallback(sock, jid, quotedMessage, links, te
     const linkText = links
       .map((link, idx) => `${idx + 1}. ${link.label}: ${link.url}`)
       .join('\n');
-    await sock.sendMessage(
-      jid,
-      { text: `Link lokasi:\n${linkText}` },
-      { quoted: quotedMessage },
-    );
+    await sock.sendMessage(jid, { text: `Link lokasi:\n${linkText}` });
   }
 
   return sentButtons;
 }
 
-async function sendLocationResponse(sock, jid, quotedMessage, route, point) {
+async function sendLocationResponse(sock, jid, route, point) {
   const summary = buildLocationSummary(route, point);
   const imageUrl = getLocationPrimaryImage(point);
   const links = buildLocationLinks(point);
@@ -598,52 +633,106 @@ async function sendLocationResponse(sock, jid, quotedMessage, route, point) {
 
   if (imageUrl) {
     try {
-      await sock.sendMessage(
-        jid,
-        {
-          image: { url: imageUrl },
-        },
-        { quoted: quotedMessage },
-      );
+      await sock.sendMessage(jid, {
+        image: { url: imageUrl },
+      });
     } catch (error) {
       console.warn('Failed to send location image, fallback to text summary:', error);
-      await sock.sendMessage(jid, { text: locationMessage }, { quoted: quotedMessage });
+      await sock.sendMessage(jid, { text: locationMessage });
     }
   }
 
   if (links.length === 0) {
-    await sock.sendMessage(
-      jid,
-      { text: locationMessage },
-      { quoted: quotedMessage },
-    );
+    await sock.sendMessage(jid, { text: locationMessage });
     return;
   }
 
   const sentButtons = await sendLocationLinksWithFallback(
     sock,
     jid,
-    quotedMessage,
     links,
     locationMessage,
   );
 
   if (!sentButtons && links.length > 0) {
-    await sock.sendMessage(jid, { text: locationMessage }, { quoted: quotedMessage });
+    await sock.sendMessage(jid, { text: locationMessage });
 
     const allLinksText = links
       .map((link, idx) => `${idx + 1}. ${link.label}: ${link.url}`)
       .join('\n');
-    await sock.sendMessage(
-      jid,
-      { text: `Semua link:\n${allLinksText}` },
-      { quoted: quotedMessage },
-    );
+    await sock.sendMessage(jid, { text: `Semua link:\n${allLinksText}` });
   }
 }
 
+async function sendCommandNotFoundWithButtons(sock, jid, reply) {
+  const helpCommand = `${reply.commandPrefix}help`;
+
+  try {
+    const payload = useInteractiveButtons
+      ? {
+          text: reply.text,
+          footer: 'Routebot',
+          interactiveButtons: [
+            {
+              name: 'quick_reply',
+              buttonParamsJson: JSON.stringify({
+                display_text: 'Help',
+                id: helpCommand,
+              }),
+            },
+            {
+              name: 'cta_url',
+              buttonParamsJson: JSON.stringify({
+                display_text: 'Open in web',
+                url: reply.openInWebUrl,
+                merchant_url: reply.openInWebUrl,
+              }),
+            },
+          ],
+        }
+      : {
+          text: reply.text,
+          footer: 'Routebot',
+          templateButtons: [
+            {
+              index: 1,
+              quickReplyButton: {
+                displayText: 'Help',
+                id: helpCommand,
+              },
+            },
+            {
+              index: 2,
+              urlButton: {
+                displayText: 'Open in web',
+                url: reply.openInWebUrl,
+              },
+            },
+          ],
+        };
+
+    await sock.sendMessage(jid, payload);
+    return;
+  } catch (error) {
+    console.warn('Failed to send command-not-found buttons, fallback to text:', error);
+  }
+
+  const fallbackText = [
+    'Command not found.',
+    '',
+    `Help: ${helpCommand}`,
+    `Open in web: ${reply.openInWebUrl}`,
+  ].join('\n');
+
+  await sock.sendMessage(jid, { text: fallbackText });
+}
+
 export async function executeCommand(text, runtime, message = null) {
-  const { commandPrefix, http } = runtime;
+  const {
+    commandPrefix,
+    http,
+    appBaseUrl = process.env.APP_BASE_URL || '',
+  } = runtime;
   const raw = text.trim();
   const quotedText = getQuotedMessageContent(message);
   const quotedMedia = getQuotedMediaMessage(message);
@@ -933,11 +1022,7 @@ export async function executeCommand(text, runtime, message = null) {
     }
   }
 
-  return [
-    'Command not found.',
-    '',
-    `Klik button di bawah untuk lihat semua command: ${commandPrefix}help`,
-  ].join('\n');
+  return buildCommandNotFoundReply(commandPrefix, appBaseUrl);
 }
 
 export async function startBot(overrides = {}) {
@@ -952,7 +1037,7 @@ export async function startBot(overrides = {}) {
   onStatus?.('starting');
 
   const http = createHttpClient(appBaseUrl);
-  const runtime = { commandPrefix, allowedNumbers, http };
+  const runtime = { commandPrefix, allowedNumbers, http, appBaseUrl };
   const pairingMethod = await choosePairingMethod(overrides);
   const shouldDisplayQr = pairingMethod !== 'phone';
 
@@ -1042,7 +1127,7 @@ export async function startBot(overrides = {}) {
         if (!reply) continue;
 
         if (typeof reply === 'string') {
-          await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: reply });
           continue;
         }
 
@@ -1055,12 +1140,11 @@ export async function startBot(overrides = {}) {
                 fileName: reply.fileName || 'attachment.zip',
                 mimetype: reply.mimetype || 'application/zip',
               },
-              { quoted: msg },
             );
             continue;
           }
 
-          await sock.sendMessage(remoteJid, { text: 'Gagal membina zip file untuk media yang direply.' }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: 'Gagal membina zip file untuk media yang direply.' });
           continue;
         }
 
@@ -1069,14 +1153,13 @@ export async function startBot(overrides = {}) {
             await sock.sendMessage(
               remoteJid,
               { sticker: reply.stickerBuffer },
-              { quoted: msg },
             );
             continue;
           }
 
           await sock.sendMessage(remoteJid, {
             text: reply.text || 'Gagal membina sticker.',
-          }, { quoted: msg });
+          });
           continue;
         }
 
@@ -1085,7 +1168,6 @@ export async function startBot(overrides = {}) {
             await sock.sendMessage(
               remoteJid,
               buildTtsAudioMessage(reply.audioBuffer),
-              { quoted: msg },
             );
             continue;
           }
@@ -1095,7 +1177,7 @@ export async function startBot(overrides = {}) {
                 text: `Suara siap: ${reply.audioUrl}`,
               }
             : { text: 'Audio tidak tersedia pada saat ini.' };
-          await sock.sendMessage(remoteJid, audioMessage, { quoted: msg });
+          await sock.sendMessage(remoteJid, audioMessage);
           continue;
         }
 
@@ -1112,11 +1194,11 @@ export async function startBot(overrides = {}) {
                   mimetype: reply.mimetype || 'image/jpeg',
                   caption: reply.caption,
                 };
-            await sock.sendMessage(remoteJid, payload, { quoted: msg });
+            await sock.sendMessage(remoteJid, payload);
             continue;
           }
 
-          await sock.sendMessage(remoteJid, { text: 'Gagal memuat turun media view-once.' }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: 'Gagal memuat turun media view-once.' });
           continue;
         }
 
@@ -1129,12 +1211,11 @@ export async function startBot(overrides = {}) {
                 mimetype: reply.mimetype || 'image/png',
                 caption: reply.caption,
               },
-              { quoted: msg },
             );
             continue;
           }
 
-          await sock.sendMessage(remoteJid, { text: 'Gagal menghasilkan QR code.' }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: 'Gagal menghasilkan QR code.' });
           continue;
         }
 
@@ -1147,17 +1228,21 @@ export async function startBot(overrides = {}) {
                 fileName: reply.fileName || 'document.txt',
                 mimetype: reply.mimetype || 'text/plain',
               },
-              { quoted: msg },
             );
             continue;
           }
 
-          await sock.sendMessage(remoteJid, { text: 'Gagal menghasilkan dokumen.' }, { quoted: msg });
+          await sock.sendMessage(remoteJid, { text: 'Gagal menghasilkan dokumen.' });
           continue;
         }
 
         if (reply.type === 'location' && reply.route && reply.point) {
-          await sendLocationResponse(sock, remoteJid, msg, reply.route, reply.point);
+          await sendLocationResponse(sock, remoteJid, reply.route, reply.point);
+          continue;
+        }
+
+        if (reply.type === 'command-not-found') {
+          await sendCommandNotFoundWithButtons(sock, remoteJid, reply);
           continue;
         }
       } catch (error) {

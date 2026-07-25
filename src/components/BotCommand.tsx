@@ -1,4 +1,7 @@
-import { Terminal, MessageCircle, Sparkles } from "lucide-react"
+import { useMemo } from "react"
+import { Share2, Terminal, MessageCircle, Sparkles } from "lucide-react"
+import { toast } from "sonner"
+import { Button } from "@/components/ui/button"
 
 const COMMAND_ITEMS = [
   {
@@ -63,7 +66,21 @@ const COMMAND_ITEMS = [
   },
 ]
 
-export function BotCommand() {
+export function BotCommand({ isSharedView = false }: { isSharedView?: boolean }) {
+  const shareUrl = useMemo(() => {
+    const base = import.meta.env.BASE_URL.replace(/\/$/, "")
+    return `${window.location.origin}${base}/#page=bot-command&shared=bot-command`
+  }, [])
+
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      toast.success("Shared link copied")
+    } catch {
+      toast.error("Failed to copy shared link")
+    }
+  }
+
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-auto bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.12),_transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent)]">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 md:p-6 lg:p-8">
@@ -85,6 +102,14 @@ export function BotCommand() {
               </div>
             </div>
           </div>
+          {!isSharedView && (
+            <div className="mt-4 flex justify-end">
+              <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={copyShareLink}>
+                <Share2 className="size-3.5" />
+                Share Link
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">

@@ -72,6 +72,22 @@ const COLOR_LABELS: Record<string, string> = {
   "#EAB308": "Yellow",
 }
 
+function getAppHashParams() {
+  return new URLSearchParams(window.location.hash.replace(/^#/, ""))
+}
+
+function getInitialPageFromHash() {
+  const hashParams = getAppHashParams()
+  if (window.location.hash.startsWith("#loc=")) return "deliveries"
+  if (hashParams.get("page") === "bot-command") return "bot-command"
+  return "home"
+}
+
+function getInitialSharedView() {
+  const hashParams = getAppHashParams()
+  return window.location.hash.startsWith("#loc=") || hashParams.get("shared") === "bot-command"
+}
+
 type QuickAccessId = "route-list" | "deliveries" | "rooster" | "plano-vm" | "gallery-album" | "settings-profile" | "bot-dashboard"
 
 type QuickAccessOption = {
@@ -1752,12 +1768,8 @@ function RefreshButton() {
 }
 
 function AppContent() {
-  const [currentPage, setCurrentPage] = useState(() =>
-    window.location.hash.startsWith("#loc=") ? "deliveries" : "home"
-  )
-  const [isSharedView] = useState(() =>
-    window.location.hash.startsWith("#loc=")
-  )
+  const [currentPage, setCurrentPage] = useState(getInitialPageFromHash)
+  const [isSharedView] = useState(getInitialSharedView)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [pinnedRouteCount, setPinnedRouteCount] = useState(0)
   const { open, openMobile, isMobile, setOpen, setOpenMobile } = useSidebar()
@@ -1894,7 +1906,7 @@ const trackablePages = ["route-list", "custom", "deliveries", "rooster", "plano-
       case "bot-dashboard":
         return <BotDashboard />
       case "bot-command":
-        return <BotCommand />
+        return <BotCommand isSharedView={isSharedView} />
       case "bot-settings":
         return <BotSettings />
       case "home":
@@ -2100,6 +2112,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 export function App() {
   const [landed, setLanded] = useState(false)
   const [showContent, setShowContent] = useState(false)
+  const [isSharedView] = useState(getInitialSharedView)
 
   useEffect(() => {
     if (!landed) return
@@ -2113,7 +2126,12 @@ export function App() {
         {!landed && <LoadingIntro onEnter={() => setLanded(true)} />}
         {landed && (
           <div className={`h-dvh w-full overflow-hidden transition-opacity duration-600 ease-out ${showContent ? "opacity-100" : "opacity-0"}`}>
-            <SidebarProvider defaultOpen={false} className="h-dvh w-full overflow-hidden">
+            <SidebarProvider
+              defaultOpen={false}
+              open={isSharedView ? false : undefined}
+              onOpenChange={isSharedView ? () => {} : undefined}
+              className="h-dvh w-full overflow-hidden"
+            >
               <EditModeProvider>
                 <RefreshProvider>
                   <AppContent />

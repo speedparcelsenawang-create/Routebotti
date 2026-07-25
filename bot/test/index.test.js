@@ -241,3 +241,20 @@ test('pdf command returns a pdf document payload', async () => {
   assert.equal(reply.fileName, 'document.pdf');
   assert.equal(reply.mimetype, 'application/pdf');
 });
+
+test('unknown command returns command-not-found payload with shared web link', async () => {
+  const reply = await executeCommand('.doesnotexist test', {
+    commandPrefix: '.',
+    appBaseUrl: 'https://routebot.example.com',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'command-not-found');
+  assert.equal(reply.commandPrefix, '.');
+  assert.equal(reply.openInWebUrl, 'https://routebot.example.com/#page=bot-command&shared=bot-command');
+  assert.match(reply.text, /Command not found\./i);
+});
