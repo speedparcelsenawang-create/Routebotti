@@ -1,9 +1,22 @@
 import { Buffer } from 'node:buffer';
 import JSZip from 'jszip';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync, inflateRawSync, deflateRawSync } from 'node:zlib';
 
 function normalizeBase64(value) {
   return String(value || '').trim().replace(/\s+/g, '');
+}
+
+function toBase64Url(base64) {
+  return String(base64 || '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function fromBase64Url(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (normalized.length % 4)) % 4;
+  return normalized + '='.repeat(padLength);
 }
 
 function normalizeArchiveEntryName(value) {
@@ -17,7 +30,9 @@ export function zipTextToBase64(text) {
     return '';
   }
 
-  return gzipSync(Buffer.from(input, 'utf8')).toString('base64');
+  // Use raw deflate + base64url to keep payload shorter than gzip+base64.
+  const packed = deflateRawSync(Buffer.from(input, 'utf8'));
+  return toBase64Url(packed.toString('base64'));
 }
 
 export function unzipTextFromBase64(payload) {
@@ -26,8 +41,14 @@ export function unzipTextFromBase64(payload) {
     return '';
   }
 
-  const zipped = Buffer.from(encoded, 'base64');
-  return gunzipSync(zipped).toString('utf8');
+  const packed = Buffer.from(fromBase64Url(encoded), 'base64');
+
+  try {
+    return inflateRawSync(packed).toString('utf8');
+  } catch {
+    // Backward compatibility for previous gzip+base64 payloads.
+    return gunzipSync(packed).toString('utf8');
+  }
 }
 
 export function buildZipCommandReply(text) {
@@ -37,22 +58,13 @@ export function buildZipCommandReply(text) {
   }
 
   const encoded = zipTextToBase64(input);
-  const zippedBytes = Buffer.from(encoded, 'base64').length;
-  const originalBytes = Buffer.byteLength(input, 'utf8');
-
-  return [
-    'ZIP Result (gzip+base64)',
-    `Original bytes: ${originalBytes}`,
-    `Gzip bytes: ${zippedBytes}`,
-    '',
-    encoded,
-  ].join('\n');
+  return ['ZIP', encoded].join('\n');
 }
 
 export function buildUnzipCommandReply(payload) {
   const encoded = normalizeBase64(payload);
   if (!encoded) {
-    return 'Sila isi data gzip+base64 untuk di-unzip.\nContoh: .unzip H4sIAAAAA...';
+    return 'Sila isi data zip text untuk di-unzip.\nContoh: .unzip S8xNVbJScEksSQQA';
   }
 
   try {
@@ -63,7 +75,7 @@ export function buildUnzipCommandReply(payload) {
 
     return ['UNZIP Result', '', text].join('\n');
   } catch {
-    return 'Data unzip tidak sah. Pastikan input ialah gzip+base64 yang dijana oleh command zip.';
+    return 'Data unzip tidak sah. Pastikan input dijana oleh command zip.';
   }
 }
 

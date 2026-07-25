@@ -29,6 +29,10 @@ const COMMAND_ITEMS = [
     description: "Hantar voice note yang dijana daripada teks.",
   },
   {
+    label: ".ss <link>",
+    description: "Hantar screenshot halaman web sebagai gambar.",
+  },
+  {
     label: ".vv",
     description: "Hantar semula media view-once yang diterima sebagai gambar atau video.",
   },

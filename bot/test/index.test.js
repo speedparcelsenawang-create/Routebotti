@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import sharp from 'sharp';
 
 import { unzipTextFromBase64 } from '../src/zip.js';
 import { buildTtsAudioMessage, executeCommand, normalizePhoneNumber } from '../src/index.js';
@@ -65,8 +66,8 @@ test('zip command can read quoted chat text', async () => {
     },
   });
 
-  const payload = reply.split('\n').at(-1);
-  assert.equal(unzipTextFromBase64(payload), 'Halo dunia dari reply');
+  assert.equal(reply.type, 'zip-text');
+  assert.equal(unzipTextFromBase64(reply.payload), 'Halo dunia dari reply');
 });
 
 test('zip command can read quoted media caption', async () => {
@@ -89,8 +90,80 @@ test('zip command can read quoted media caption', async () => {
     },
   });
 
-  const payload = reply.split('\n').at(-1);
-  assert.equal(unzipTextFromBase64(payload), 'Teks dari media');
+  assert.equal(reply.type, 'zip-text');
+  assert.equal(unzipTextFromBase64(reply.payload), 'Teks dari media');
+});
+
+test('grid command combines current image with quoted image', async () => {
+  const firstImage = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 255, g: 0, b: 0 },
+    },
+  }).jpeg().toBuffer();
+
+  const secondImage = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 0, g: 0, b: 255 },
+    },
+  }).jpeg().toBuffer();
+
+  const reply = await executeCommand('.grid', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      if (media?.url === 'quoted-image') return firstImage;
+      if (media?.url === 'current-image') return secondImage;
+      return null;
+    },
+  }, {
+    imageMessage: {
+      caption: '.grid',
+      url: 'current-image',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'quoted-image',
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'image-grid');
+  assert.ok(Buffer.isBuffer(reply.imageBuffer));
+  assert.equal(reply.mimetype, 'image/jpeg');
+
+  const meta = await sharp(reply.imageBuffer).metadata();
+  assert.equal(meta.width, 1440);
+  assert.equal(meta.height, 720);
+});
+
+test('grid command asks to reply first image when quoted image is missing', async () => {
+  const reply = await executeCommand('.grid', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  }, {
+    imageMessage: {
+      caption: '.grid',
+      url: 'current-image',
+    },
+  });
+
+  assert.match(String(reply), /reply satu gambar/i);
 });
 
 test('sticker command asks to reply media when no quoted media', async () => {
@@ -208,6 +281,44 @@ test('qr command returns a high-quality qr image payload', async () => {
   assert.ok(Buffer.isBuffer(reply.imageBuffer));
   assert.equal(reply.mimetype, 'image/png');
   assert.equal(reply.caption, 'hello world');
+});
+
+test('ss command returns a screenshot image payload', async () => {
+  const calls = [];
+  const reply = await executeCommand('.ss example.com', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async fetchScreenshotBuffer(targetUrl, options) {
+      calls.push({ targetUrl, options });
+      return Buffer.from('fake-screenshot');
+    },
+  });
+
+  assert.equal(reply.type, 'screenshot');
+  assert.ok(Buffer.isBuffer(reply.imageBuffer));
+  assert.equal(reply.imageBuffer.toString('utf8'), 'fake-screenshot');
+  assert.equal(reply.caption, 'https://example.com/');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].targetUrl, 'https://example.com/');
+});
+
+test('ss command rejects missing link', async () => {
+  const reply = await executeCommand('.ss', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'screenshot');
+  assert.equal(reply.imageBuffer, null);
+  assert.match(reply.caption, /Sila isi link/i);
 });
 
 test('txt command returns a text document payload', async () => {

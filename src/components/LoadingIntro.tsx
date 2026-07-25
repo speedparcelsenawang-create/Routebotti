@@ -149,9 +149,7 @@ export function LoadingIntro({ onEnter }: { onEnter: () => void }) {
             />
             {/* Logo container */}
             <div
-              className={`relative flex items-center justify-center w-20 h-20 rounded-2xl
-                ${isDark ? "bg-white/5 border border-white/10" : "bg-white border border-black/8 shadow-lg"}`}
-              style={{ backdropFilter: "blur(12px)" }}
+              className="relative flex items-center justify-center w-20 h-20"
             >
               <img src="/FamilyMart.png" alt="FamilyMart" className="w-12 h-12 object-contain" />
             </div>
@@ -163,7 +161,7 @@ export function LoadingIntro({ onEnter }: { onEnter: () => void }) {
           className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}
           style={{ transitionDelay: "220ms" }}
         >
-          <h1 className={`text-2xl font-bold tracking-tight mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>
+          <h1 className={`text-lg font-bold tracking-tight mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>
             FamilyMart
           </h1>
           <p className={`text-xs font-semibold tracking-widest uppercase ${isDark ? "text-white/60" : "text-black/60"}`}>

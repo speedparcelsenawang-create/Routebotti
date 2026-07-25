@@ -1180,6 +1180,15 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
     setSelectedPoint(point)
   }, [])
 
+  const handleDetailDialogInteractOutside = useCallback((event: Event) => {
+    const target = event.target as HTMLElement | null
+    if (!target) return
+    // RowInfoModal is rendered in a portal; treat its layer as inside this flow.
+    if (target.closest(".row-info-modal-content") || target.closest(".row-info-modal-overlay")) {
+      event.preventDefault()
+    }
+  }, [])
+
   const existingLocationOptions = useMemo<ExistingLocationOption[]>(() => {
     const byCode = new Map<string, ExistingLocationOption>()
     const sourceRoutes = isPlaygroundMode ? playgroundSourceRoutes : routes
@@ -3395,6 +3404,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
 
                   <Dialog open={detailDialogOpen && route.id === currentRouteId} onOpenChange={(open) => { if (!open) { setDetailDialogOpen(false); setDialogView('table'); setDetailSearchQuery(''); setSelectedRows([]); setCombinedRouteIds(new Set([currentRouteId])); setShowPolyline(false); setMapRefitToken(0); setMapResizeToken(0) } }}>
                   <DialogContent
+                    onInteractOutside={handleDetailDialogInteractOutside}
                     overlayClassName="backdrop-blur-sm bg-black/30"
                     className={`p-0 gap-0 flex flex-col overflow-hidden duration-300 ease-in-out ${
                       detailFullscreen
@@ -4564,6 +4574,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
                     onOpenChange={(open) => { if (!open) setSelectedPoint(null) }}
                     point={selectedPoint}
                     isEditMode={false}
+                    overlayClassName="bg-black/55"
                   />
                 )}
           </div>

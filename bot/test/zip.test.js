@@ -22,7 +22,8 @@ test('buildZipCommandReply returns a gzip payload', () => {
   const reply = buildZipCommandReply('route 3PVK04 aktif');
   const payload = reply.split('\n').at(-1);
 
-  assert.match(reply, /ZIP Result/);
+  assert.match(reply, /^ZIP\n/);
+  assert.doesNotMatch(payload, /^H4sIA/i);
   assert.equal(unzipTextFromBase64(payload), 'route 3PVK04 aktif');
 });
 

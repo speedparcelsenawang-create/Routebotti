@@ -386,8 +386,8 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
       <Dialog open={open} onOpenChange={(o) => { if (!o) { setPendingUrl(null); setPendingUrlLabel("") } onOpenChange(o) }}>
       <DialogContent
         onInteractOutside={handleDialogInteractOutside}
-        overlayClassName={overlayClassName ?? "bg-black/18 dark:bg-black/45"}
-        className="flex max-h-[min(80vh,36rem)] w-[93vw] max-w-[22.5rem] transform-gpu flex-col gap-0 overflow-hidden rounded-[22px] border border-sidebar-border/80 bg-[hsl(var(--sidebar)/0.9)] text-sidebar-foreground p-0 shadow-[0_10px_24px_hsl(var(--foreground)/0.12)] data-[state=open]:duration-150 data-[state=closed]:duration-100 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 dark:border-border/80 dark:bg-card dark:text-foreground dark:shadow-[0_14px_30px_hsl(var(--background)/0.5)] md:max-w-[23.5rem]"
+        overlayClassName={`row-info-modal-overlay ${overlayClassName ?? "bg-black/18 dark:bg-black/45"}`}
+        className="row-info-modal-content flex max-h-[min(80vh,36rem)] w-[93vw] max-w-[22.5rem] transform-gpu flex-col gap-0 overflow-hidden rounded-[22px] border border-sidebar-border/80 bg-[hsl(var(--sidebar)/0.9)] text-sidebar-foreground p-0 shadow-[0_10px_24px_hsl(var(--foreground)/0.12)] data-[state=open]:duration-150 data-[state=closed]:duration-100 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 dark:border-border/80 dark:bg-card dark:text-foreground dark:shadow-[0_14px_30px_hsl(var(--background)/0.5)] md:max-w-[23.5rem]"
       >
         {/* Header */}
         <DialogHeader className="shrink-0 border-b border-sidebar-border/80 bg-gradient-to-b from-[hsl(var(--sidebar)/0.95)] to-[hsl(var(--sidebar)/0.75)] px-4 pt-4 pb-3 text-left dark:border-border dark:from-background/75 dark:to-card/35 md:px-5 md:pt-5 md:pb-4">

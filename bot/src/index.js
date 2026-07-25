@@ -9,8 +9,10 @@ import qrcodeTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { buildLocationLinks as buildLocationLinksFromPoint, chunkLinksForButtons } from './link-buttons.js';
+import { buildScreenshotCommandReply } from './screenshot.js';
 import { buildTtsCommandResult } from './tts.js';
-import { buildUnzipCommandReply, buildZipCommandReply, buildZipMediaCommandReply } from './zip.js';
+import { buildUnzipCommandReply, buildZipMediaCommandReply, zipTextToBase64 } from './zip.js';
+import { buildImageGridCommandReply } from './grid.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -729,6 +731,40 @@ async function sendCommandNotFoundWithButtons(sock, jid, reply) {
   await sock.sendMessage(jid, { text: fallbackText });
 }
 
+async function sendZipTextWithCopyButton(sock, jid, payload) {
+  const encoded = String(payload || '').trim();
+  if (!encoded) {
+    await sock.sendMessage(jid, { text: 'Sila isi teks untuk di-zip.\nContoh: .zip Halo dunia' });
+    return;
+  }
+
+  if (!useInteractiveButtons) {
+    await sock.sendMessage(jid, { text: ['ZIP', encoded].join('\n') });
+    return;
+  }
+
+  try {
+    await sock.sendMessage(jid, {
+      text: ['ZIP', encoded].join('\n'),
+      footer: 'Routebot',
+      interactiveButtons: [
+        {
+          name: 'cta_copy',
+          buttonParamsJson: JSON.stringify({
+            display_text: 'Copy payload',
+            copy_code: encoded,
+          }),
+        },
+      ],
+    });
+    return;
+  } catch (error) {
+    console.warn('Failed to send zip cta_copy button, fallback to text:', error);
+  }
+
+  await sock.sendMessage(jid, { text: ['ZIP', encoded].join('\n') });
+}
+
 export async function executeCommand(text, runtime, message = null) {
   const {
     commandPrefix,
@@ -779,14 +815,16 @@ export async function executeCommand(text, runtime, message = null) {
       `${commandPrefix}route <code|name> - Detail route`,
       `${commandPrefix}today - Ringkasan stop aktif hari ini`,
       `${commandPrefix}tts <text> - Hantar teks + audio TTS`,
+      `${commandPrefix}ss <link> - Hantar screenshot halaman web sebagai gambar`,
       `${commandPrefix}vv - Hantar semula media view-once (gambar/video)`,
       `${commandPrefix}qr <text> - Hasilkan QR code PNG berkualiti tinggi`,
       `${commandPrefix}txt <text> - Hasilkan fail .txt daripada teks`,
       `${commandPrefix}pdf <text> - Hasilkan fail .pdf daripada teks`,
       `${commandPrefix}sticker - Reply gambar/video jadi sticker`,
       `${commandPrefix}sticker nobg - Reply gambar jadi sticker tanpa background`,
-      `${commandPrefix}zip <text> - Compress teks ke gzip+base64 atau reply media jadi zip file`,
-      `${commandPrefix}unzip <base64> - Nyahmampat gzip+base64 atau reply chat/media ke teks`,
+      `${commandPrefix}grid - Hantar gambar kedua (caption .grid) sambil reply gambar pertama untuk gabung jadi grid`,
+      `${commandPrefix}zip <text> - Compress teks (short payload) atau reply media jadi zip file`,
+      `${commandPrefix}unzip <payload> - Nyahmampat payload zip text atau reply chat/media ke teks`,
       `${commandPrefix}<location_code> - Detail lokasi + gambar + link`,
       `.<location_code> - Alias lokasi guna dot (contoh: .33)`,
     ].join('\n');
@@ -834,6 +872,13 @@ export async function executeCommand(text, runtime, message = null) {
   if (command === 'tts' || command === 'voice') {
     const textToRead = arg || quotedText || 'Halo, bot Routebot siap membantu.';
     return buildTtsCommandResult(textToRead, { lang: 'ms' });
+  }
+
+  if (command === 'ss' || command === 'screenshot') {
+    const targetLink = arg || quotedText || '';
+    return buildScreenshotCommandReply(targetLink, {
+      fetchScreenshotBuffer: runtime.fetchScreenshotBuffer,
+    });
   }
 
   if (command === 'vv') {
@@ -991,6 +1036,28 @@ export async function executeCommand(text, runtime, message = null) {
     });
   }
 
+  if (command === 'grid') {
+    const currentMedia = getMessageMedia(message);
+    if (!currentMedia || currentMedia.mediaType !== 'image') {
+      return `Hantar gambar kedua dengan caption ${commandPrefix}grid dan reply gambar pertama.`;
+    }
+
+    if (!quotedMedia || quotedMedia.mediaType !== 'image') {
+      return `Sila reply satu gambar dahulu, kemudian hantar gambar kedua dengan ${commandPrefix}grid.`;
+    }
+
+    const [firstImageBuffer, secondImageBuffer] = await Promise.all([
+      quotedMediaDownloader(quotedMedia.media, quotedMedia.mediaType),
+      quotedMediaDownloader(currentMedia.media, currentMedia.mediaType),
+    ]);
+
+    if (!firstImageBuffer || !secondImageBuffer) {
+      return 'Gagal memuat turun dua gambar untuk digabungkan.';
+    }
+
+    return buildImageGridCommandReply(firstImageBuffer, secondImageBuffer);
+  }
+
   if (command === 'zip') {
     if (!arg && quotedMedia) {
       const mediaBuffer = await quotedMediaDownloader(quotedMedia.media, quotedMedia.mediaType);
@@ -1001,7 +1068,20 @@ export async function executeCommand(text, runtime, message = null) {
       }
     }
 
-    return buildZipCommandReply(arg || quotedText);
+    const textToZip = String(arg || quotedText || '').trim();
+    if (!textToZip) {
+      return 'Sila isi teks untuk di-zip.\nContoh: .zip Halo dunia';
+    }
+
+    const payload = zipTextToBase64(textToZip);
+    if (!payload) {
+      return 'Hasil zip kosong.';
+    }
+
+    return {
+      type: 'zip-text',
+      payload,
+    };
   }
 
   if (command === 'unzip') {
@@ -1150,6 +1230,11 @@ export async function startBot(overrides = {}) {
           continue;
         }
 
+        if (reply.type === 'zip-text') {
+          await sendZipTextWithCopyButton(sock, remoteJid, reply.payload);
+          continue;
+        }
+
         if (reply.type === 'sticker') {
           if (reply.stickerBuffer) {
             await sock.sendMessage(
@@ -1218,6 +1303,40 @@ export async function startBot(overrides = {}) {
           }
 
           await sock.sendMessage(remoteJid, { text: 'Gagal menghasilkan QR code.' });
+          continue;
+        }
+
+        if (reply.type === 'image-grid') {
+          if (reply.imageBuffer) {
+            await sock.sendMessage(
+              remoteJid,
+              {
+                image: reply.imageBuffer,
+                mimetype: reply.mimetype || 'image/jpeg',
+                caption: reply.caption,
+              },
+            );
+            continue;
+          }
+
+          await sock.sendMessage(remoteJid, { text: reply.caption || 'Gagal gabungkan dua gambar.' });
+          continue;
+        }
+
+        if (reply.type === 'screenshot') {
+          if (reply.imageBuffer) {
+            await sock.sendMessage(
+              remoteJid,
+              {
+                image: reply.imageBuffer,
+                mimetype: reply.mimetype || 'image/png',
+                caption: reply.caption,
+              },
+            );
+            continue;
+          }
+
+          await sock.sendMessage(remoteJid, { text: reply.caption || 'Gagal menghasilkan screenshot.' });
           continue;
         }
 
