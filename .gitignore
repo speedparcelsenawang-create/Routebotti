@@ -31,4 +31,6 @@ dist-ssr
 # WhatsApp Web bot runtime files
 bot/node_modules
 bot/.wa-auth
+.bot-settings.json
+bot/.bot-settings.json
 .wa-auth

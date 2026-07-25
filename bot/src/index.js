@@ -156,6 +156,339 @@ function createHttpClient(baseUrl) {
 }
 
 const logger = pino({ level: 'info' });
+const DEFAULT_TIMEZONE = String(process.env.BOT_TIMEZONE || 'Asia/Kuala_Lumpur').trim() || 'Asia/Kuala_Lumpur';
+const BOT_SETTINGS_PATH = path.join(botDir, '.bot-settings.json');
+const DEFAULT_PRAYER_CITY = String(process.env.BOT_PRAYER_CITY || 'Kuala Lumpur').trim() || 'Kuala Lumpur';
+const DEFAULT_PRAYER_COUNTRY = String(process.env.BOT_PRAYER_COUNTRY || 'Malaysia').trim() || 'Malaysia';
+const DEFAULT_PRAYER_METHOD = String(process.env.BOT_PRAYER_METHOD || '3').trim() || '3';
+const PRAYER_REMINDER_INTERVAL_MS = 30 * 1000;
+const WEEKDAY_INDEX_BY_LABEL = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
+};
+const PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+const PRAYER_LABELS_MS = {
+  Fajr: 'subuh',
+  Dhuhr: 'zohor',
+  Asr: 'asar',
+  Maghrib: 'maghrib',
+  Isha: 'isyak',
+};
+
+const prayerTimesCache = new Map();
+
+function isValidTimeZone(timeZone) {
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readBotSettings() {
+  try {
+    if (!fs.existsSync(BOT_SETTINGS_PATH)) {
+      return {};
+    }
+
+    const raw = fs.readFileSync(BOT_SETTINGS_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    return parsed;
+  } catch (error) {
+    console.warn('Failed to read bot settings file:', error);
+    return {};
+  }
+}
+
+function writeBotSettings(nextSettings) {
+  try {
+    const existing = readBotSettings();
+    const merged = {
+      ...existing,
+      ...(nextSettings && typeof nextSettings === 'object' ? nextSettings : {}),
+    };
+
+    fs.writeFileSync(BOT_SETTINGS_PATH, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    return true;
+  } catch (error) {
+    console.warn('Failed to write bot settings file:', error);
+    return false;
+  }
+}
+
+const persistedTimeZone = String(readBotSettings().timeZone || '').trim();
+let botTimeZone = isValidTimeZone(persistedTimeZone) ? persistedTimeZone : DEFAULT_TIMEZONE;
+
+function normalizePrayerReminderConfig(rawConfig) {
+  const config = rawConfig && typeof rawConfig === 'object' ? rawConfig : {};
+  const enabledChatsRaw = config.enabledChats && typeof config.enabledChats === 'object'
+    ? config.enabledChats
+    : {};
+  const lastSentByChatRaw = config.lastSentByChat && typeof config.lastSentByChat === 'object'
+    ? config.lastSentByChat
+    : {};
+
+  const enabledChats = {};
+  for (const [jid, value] of Object.entries(enabledChatsRaw)) {
+    if (String(jid || '').trim() && value === true) {
+      enabledChats[jid] = true;
+    }
+  }
+
+  const lastSentByChat = {};
+  for (const [jid, value] of Object.entries(lastSentByChatRaw)) {
+    if (!String(jid || '').trim() || !value || typeof value !== 'object') continue;
+
+    const date = String(value.date || '').trim();
+    const prayers = Array.isArray(value.prayers)
+      ? value.prayers.filter((item) => PRAYER_NAMES.includes(String(item || '').trim()))
+      : [];
+
+    lastSentByChat[jid] = { date, prayers };
+  }
+
+  return { enabledChats, lastSentByChat };
+}
+
+let botPrayerReminderConfig = normalizePrayerReminderConfig(readBotSettings().prayerReminder);
+
+function getCurrentTimeZone(runtime = {}) {
+  if (typeof runtime.getTimeZone === 'function') {
+    const runtimeTimeZone = String(runtime.getTimeZone() || '').trim();
+    if (runtimeTimeZone) return runtimeTimeZone;
+  }
+
+  const runtimeTimeZone = String(runtime.timeZone || '').trim();
+  if (runtimeTimeZone) return runtimeTimeZone;
+
+  return botTimeZone;
+}
+
+function getPrayerReminderConfig(runtime = {}) {
+  if (typeof runtime.getPrayerReminderConfig === 'function') {
+    const result = runtime.getPrayerReminderConfig();
+    return normalizePrayerReminderConfig(result);
+  }
+
+  return normalizePrayerReminderConfig(botPrayerReminderConfig);
+}
+
+function updatePrayerReminderConfig(nextConfig, runtime = {}) {
+  const normalized = normalizePrayerReminderConfig(nextConfig);
+
+  if (typeof runtime.setPrayerReminderConfig === 'function') {
+    return runtime.setPrayerReminderConfig(normalized);
+  }
+
+  const didPersist = writeBotSettings({ prayerReminder: normalized });
+  if (!didPersist) {
+    return false;
+  }
+
+  botPrayerReminderConfig = normalized;
+  return true;
+}
+
+function setPrayerReminderEnabledForChat(chatJid, enabled, runtime = {}) {
+  const jid = String(chatJid || '').trim();
+  if (!jid) return false;
+
+  const current = getPrayerReminderConfig(runtime);
+  const next = {
+    enabledChats: { ...current.enabledChats },
+    lastSentByChat: { ...current.lastSentByChat },
+  };
+
+  if (enabled) {
+    next.enabledChats[jid] = true;
+  } else {
+    delete next.enabledChats[jid];
+    delete next.lastSentByChat[jid];
+  }
+
+  return updatePrayerReminderConfig(next, runtime);
+}
+
+function updateTimeZone(nextTimeZone, runtime = {}) {
+  const normalized = String(nextTimeZone || '').trim();
+  if (!isValidTimeZone(normalized)) return false;
+
+  if (typeof runtime.setTimeZone === 'function') {
+    return runtime.setTimeZone(normalized);
+  }
+
+  const didPersist = writeBotSettings({ timeZone: normalized });
+  if (!didPersist) {
+    return false;
+  }
+
+  botTimeZone = normalized;
+  return true;
+}
+
+function getDateContextInTimeZone(timeZone, now = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    day: 'numeric',
+  });
+
+  const parts = formatter.formatToParts(now);
+  const weekdayLabel = String(parts.find((part) => part.type === 'weekday')?.value || '').slice(0, 3).toLowerCase();
+  const dayOfWeek = WEEKDAY_INDEX_BY_LABEL[weekdayLabel];
+  const dayOfMonth = Number(parts.find((part) => part.type === 'day')?.value || NaN);
+
+  if (!Number.isInteger(dayOfWeek) || !Number.isFinite(dayOfMonth)) {
+    return {
+      dayOfWeek: now.getDay(),
+      dayOfMonth: now.getDate(),
+    };
+  }
+
+  return { dayOfWeek, dayOfMonth };
+}
+
+function getClockContextInTimeZone(timeZone, now = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(now);
+  const year = String(parts.find((part) => part.type === 'year')?.value || '');
+  const month = String(parts.find((part) => part.type === 'month')?.value || '').padStart(2, '0');
+  const day = String(parts.find((part) => part.type === 'day')?.value || '').padStart(2, '0');
+  const hour = String(parts.find((part) => part.type === 'hour')?.value || '').padStart(2, '0');
+  const minute = String(parts.find((part) => part.type === 'minute')?.value || '').padStart(2, '0');
+
+  if (!year || !month || !day || !hour || !minute) {
+    return {
+      dateKey: now.toISOString().slice(0, 10),
+      timeKey: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+    };
+  }
+
+  return {
+    dateKey: `${year}-${month}-${day}`,
+    timeKey: `${hour}:${minute}`,
+  };
+}
+
+function normalizePrayerClockValue(value) {
+  const match = String(value || '').match(/(\d{1,2}):(\d{2})/);
+  if (!match) return '';
+  return `${String(match[1]).padStart(2, '0')}:${match[2]}`;
+}
+
+async function fetchPrayerTimesForDate(timeZone, dateContext) {
+  const dateKey = dateContext?.dateKey || '';
+  if (!timeZone || !dateKey) return null;
+
+  const city = DEFAULT_PRAYER_CITY;
+  const country = DEFAULT_PRAYER_COUNTRY;
+  const method = DEFAULT_PRAYER_METHOD;
+  const cacheKey = `${timeZone}|${dateKey}|${city}|${country}|${method}`;
+  const cached = prayerTimesCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const response = await axios.get('https://api.aladhan.com/v1/timingsByCity', {
+    timeout: 15000,
+    params: {
+      city,
+      country,
+      method,
+      date: dateKey,
+    },
+  });
+
+  const timings = response?.data?.data?.timings;
+  if (!timings || typeof timings !== 'object') {
+    return null;
+  }
+
+  const result = {};
+  for (const prayerName of PRAYER_NAMES) {
+    result[prayerName] = normalizePrayerClockValue(timings[prayerName]);
+  }
+
+  prayerTimesCache.set(cacheKey, result);
+  return result;
+}
+
+async function checkAndSendPrayerReminders(sock, runtime = {}) {
+  const prayerConfig = getPrayerReminderConfig(runtime);
+  const enabledChats = Object.keys(prayerConfig.enabledChats || {});
+  if (enabledChats.length === 0) return;
+
+  const timeZone = getCurrentTimeZone(runtime);
+  const clockContext = getClockContextInTimeZone(timeZone);
+
+  let prayerTimes;
+  try {
+    prayerTimes = await fetchPrayerTimesForDate(timeZone, clockContext);
+  } catch (error) {
+    console.warn('Failed to fetch prayer times:', error?.message || error);
+    return;
+  }
+
+  if (!prayerTimes) return;
+
+  const prayerName = PRAYER_NAMES.find((name) => prayerTimes[name] === clockContext.timeKey);
+  if (!prayerName) return;
+
+  const prayerLabel = PRAYER_LABELS_MS[prayerName] || prayerName.toLowerCase();
+  const updatedConfig = {
+    enabledChats: { ...prayerConfig.enabledChats },
+    lastSentByChat: { ...prayerConfig.lastSentByChat },
+  };
+  let didChange = false;
+
+  for (const chatJid of enabledChats) {
+    const status = prayerConfig.lastSentByChat?.[chatJid];
+    const prayersForDate = status?.date === clockContext.dateKey && Array.isArray(status?.prayers)
+      ? status.prayers
+      : [];
+    if (prayersForDate.includes(prayerName)) {
+      continue;
+    }
+
+    try {
+      await sock.sendMessage(chatJid, {
+        text: `Sudah masuk waktu solat ${prayerLabel}. Jam ${prayerTimes[prayerName]} (${timeZone}).`,
+      });
+
+      const nextPrayers = [...prayersForDate, prayerName];
+      updatedConfig.lastSentByChat[chatJid] = {
+        date: clockContext.dateKey,
+        prayers: nextPrayers,
+      };
+      didChange = true;
+    } catch (error) {
+      console.warn(`Failed to send prayer reminder to ${chatJid}:`, error?.message || error);
+    }
+  }
+
+  if (didChange) {
+    updatePrayerReminderConfig(updatedConfig, runtime);
+  }
+}
 
 function getTextMessageContent(message) {
   if (!message) return '';
@@ -185,14 +518,19 @@ function getTextMessageContent(message) {
   );
 }
 
-function getQuotedMessageContent(message) {
-  const contextInfo =
+function getMessageContextInfo(message) {
+  return (
     message?.extendedTextMessage?.contextInfo
     || message?.imageMessage?.contextInfo
     || message?.videoMessage?.contextInfo
     || message?.documentMessage?.contextInfo
     || message?.audioMessage?.contextInfo
-    || null;
+    || null
+  );
+}
+
+function getQuotedMessageContent(message) {
+  const contextInfo = getMessageContextInfo(message);
 
   const quotedMessage = contextInfo?.quotedMessage;
   if (!quotedMessage) return '';
@@ -226,13 +564,7 @@ function getMessageMedia(message) {
 }
 
 function getQuotedMediaMessage(message) {
-  const contextInfo =
-    message?.extendedTextMessage?.contextInfo
-    || message?.imageMessage?.contextInfo
-    || message?.videoMessage?.contextInfo
-    || message?.documentMessage?.contextInfo
-    || message?.audioMessage?.contextInfo
-    || null;
+  const contextInfo = getMessageContextInfo(message);
 
   const quotedMessage = contextInfo?.quotedMessage;
   if (!quotedMessage) return null;
@@ -259,37 +591,42 @@ function getQuotedMediaMessage(message) {
 
 function getAllQuotedMediaMessages(message) {
   const results = [];
-  const contextInfo =
-    message?.extendedTextMessage?.contextInfo
-    || message?.imageMessage?.contextInfo
-    || message?.videoMessage?.contextInfo
-    || message?.documentMessage?.contextInfo
-    || message?.audioMessage?.contextInfo
-    || null;
+  const visited = new Set();
+  let quotedMessage = getMessageContextInfo(message)?.quotedMessage;
 
-  const quotedMessage = contextInfo?.quotedMessage;
-  if (!quotedMessage) return results;
+  while (quotedMessage && typeof quotedMessage === 'object') {
+    const mediaKeys = ['imageMessage', 'videoMessage', 'documentMessage', 'audioMessage', 'stickerMessage'];
+    let hasDirectMedia = false;
 
-  const mediaKeys = ['imageMessage', 'videoMessage', 'documentMessage', 'audioMessage', 'stickerMessage'];
-  for (const key of mediaKeys) {
-    const media = quotedMessage[key];
-    if (media && typeof media === 'object' && hasDownloadableMedia(media)) {
-      results.push({
-        quotedMessage,
-        mediaType: key.replace('Message', ''),
-        media,
-      });
+    for (const key of mediaKeys) {
+      const media = quotedMessage[key];
+      if (media && typeof media === 'object' && hasDownloadableMedia(media)) {
+        hasDirectMedia = true;
+        results.push({
+          quotedMessage,
+          mediaType: key.replace('Message', ''),
+          media,
+        });
+      }
     }
-  }
 
-  if (results.length > 0) return results;
-
-  const nestedQuotedMessage = quotedMessage?.viewOnceMessage?.message || quotedMessage?.viewOnceMessageV2?.message;
-  if (nestedQuotedMessage && typeof nestedQuotedMessage === 'object') {
-    const nestedMedia = getMessageMedia(nestedQuotedMessage);
-    if (nestedMedia) {
-      results.push(nestedMedia);
+    if (!hasDirectMedia) {
+      const nestedQuotedMessage = quotedMessage?.viewOnceMessage?.message || quotedMessage?.viewOnceMessageV2?.message;
+      if (nestedQuotedMessage && typeof nestedQuotedMessage === 'object') {
+        const nestedMedia = getMessageMedia(nestedQuotedMessage);
+        if (nestedMedia) {
+          results.push(nestedMedia);
+        }
+      }
     }
+
+    const nextQuotedMessage = getMessageContextInfo(quotedMessage)?.quotedMessage;
+    if (!nextQuotedMessage || visited.has(nextQuotedMessage)) {
+      break;
+    }
+
+    visited.add(nextQuotedMessage);
+    quotedMessage = nextQuotedMessage;
   }
 
   return results;
@@ -347,14 +684,14 @@ function isAllowedSender(jid, allowedNumbers) {
   return allowedNumbers.has(sender);
 }
 
-function isDeliveryActiveToday(deliveryLabel, date = new Date()) {
+function isDeliveryActiveToday(deliveryLabel, dateContext = { dayOfWeek: new Date().getDay(), dayOfMonth: new Date().getDate() }) {
   const label = String(deliveryLabel || '').trim().toLowerCase();
   if (!label) return true;
 
   if (label === 'daily') return true;
-  if (label === 'weekday') return date.getDay() >= 1 && date.getDay() <= 5;
-  if (label === 'alt 1') return date.getDate() % 2 === 1;
-  if (label === 'alt 2') return date.getDate() % 2 === 0;
+  if (label === 'weekday') return dateContext.dayOfWeek >= 1 && dateContext.dayOfWeek <= 5;
+  if (label === 'alt 1') return dateContext.dayOfMonth % 2 === 1;
+  if (label === 'alt 2') return dateContext.dayOfMonth % 2 === 0;
 
   return true;
 }
@@ -381,9 +718,9 @@ function summarizeRoutes(routes) {
   return `Route Summary\nTotal route: ${routes.length}\n\n${lines.join('\n')}${extra}`;
 }
 
-function summarizeRouteDetail(route) {
+function summarizeRouteDetail(route, dateContext) {
   const points = Array.isArray(route.deliveryPoints) ? route.deliveryPoints : [];
-  const activePoints = points.filter((point) => isDeliveryActiveToday(point.delivery));
+  const activePoints = points.filter((point) => isDeliveryActiveToday(point.delivery, dateContext));
   const lines = points.slice(0, 30).map((point, idx) => {
     const delivery = point.delivery || 'Daily';
     return `${idx + 1}. [${point.code}] ${point.name} (${delivery})`;
@@ -824,6 +1161,8 @@ export async function executeCommand(text, runtime, message = null) {
       `${commandPrefix}routes - Senarai semua route`,
       `${commandPrefix}route <code|name> - Detail route`,
       `${commandPrefix}today - Ringkasan stop aktif hari ini`,
+      `${commandPrefix}timezone [Region/City] - Semak atau tetapkan timezone bot`,
+      `${commandPrefix}timesolat <on|off|status> - Auto notifikasi masuk waktu solat untuk chat semasa`,
       `${commandPrefix}tts <text> - Hantar teks + audio TTS`,
       `${commandPrefix}ss <link> - Hantar screenshot halaman web sebagai gambar`,
       `${commandPrefix}vv - Hantar semula media view-once (gambar/video)`,
@@ -832,7 +1171,7 @@ export async function executeCommand(text, runtime, message = null) {
       `${commandPrefix}pdf <text> - Hasilkan fail .pdf daripada teks`,
       `${commandPrefix}sticker - Reply gambar/video jadi sticker`,
       `${commandPrefix}sticker nobg - Reply gambar jadi sticker tanpa background`,
-      `${commandPrefix}grid - Hantar gambar dengan caption .grid untuk tambah overlay grid`,
+      `${commandPrefix}grid - Gabung gambar jadi satu kolaj (2 gambar: kiri|kanan, 3 gambar: 2 atas + 1 bawah)`,
       `${commandPrefix}zip <text> - Compress teks (gzip+base64) atau reply media jadi zip file`,
       `${commandPrefix}unzip <payload> - Nyahmampat payload zip text atau reply chat/media ke teks`,
       `${commandPrefix}<location_code> - Detail lokasi + gambar + link`,
@@ -860,14 +1199,93 @@ export async function executeCommand(text, runtime, message = null) {
       return `Route tidak dijumpai untuk: ${arg}`;
     }
 
-    return summarizeRouteDetail(route);
+    const timeZone = getCurrentTimeZone(runtime);
+    const dateContext = getDateContextInTimeZone(timeZone);
+    return summarizeRouteDetail(route, dateContext);
+  }
+
+  if (command === 'timezone' || command === 'tz') {
+    const timeZone = getCurrentTimeZone(runtime);
+    if (!arg) {
+      return [
+        `Timezone semasa: ${timeZone}`,
+        `Guna: ${commandPrefix}timezone Asia/Kuala_Lumpur`,
+      ].join('\n');
+    }
+
+    const requestedTimeZone = arg.replace(/^set\s+/i, '').trim();
+    if (!requestedTimeZone) {
+      return `Sila isi timezone. Contoh: ${commandPrefix}timezone Asia/Kuala_Lumpur`;
+    }
+
+    if (!isValidTimeZone(requestedTimeZone)) {
+      return [
+        `Timezone tidak sah: ${requestedTimeZone}`,
+        'Sila guna format IANA seperti Asia/Kuala_Lumpur atau Asia/Jakarta.',
+      ].join('\n');
+    }
+
+    const didUpdate = updateTimeZone(requestedTimeZone, runtime);
+    if (!didUpdate) {
+      return 'Gagal simpan timezone baru.';
+    }
+
+    return `Timezone berjaya ditetapkan ke: ${requestedTimeZone}`;
+  }
+
+  if (command === 'timesolat') {
+    const targetChatJid = String(runtime.chatJid || '').trim();
+    if (!targetChatJid) {
+      return 'Command .timesolat hanya boleh digunakan dalam chat WhatsApp.';
+    }
+
+    const mode = String(arg || 'status').trim().toLowerCase();
+    const prayerConfig = getPrayerReminderConfig(runtime);
+    const isEnabled = prayerConfig.enabledChats?.[targetChatJid] === true;
+    const targetLabel = targetChatJid.endsWith('@g.us') ? 'group ini' : 'chat ini';
+
+    if (mode === 'status') {
+      return isEnabled
+        ? `Timesolat untuk ${targetLabel}: ON`
+        : `Timesolat untuk ${targetLabel}: OFF\nGuna ${commandPrefix}timesolat on untuk aktifkan.`;
+    }
+
+    if (mode === 'on') {
+      if (isEnabled) {
+        return `Timesolat untuk ${targetLabel} sudah ON.`;
+      }
+
+      const didEnable = setPrayerReminderEnabledForChat(targetChatJid, true, runtime);
+      if (!didEnable) {
+        return 'Gagal simpan tetapan timesolat.';
+      }
+
+      return `Timesolat ON untuk ${targetLabel}. Bot akan hantar notifikasi bila masuk waktu solat.`;
+    }
+
+    if (mode === 'off') {
+      if (!isEnabled) {
+        return `Timesolat untuk ${targetLabel} sudah OFF.`;
+      }
+
+      const didDisable = setPrayerReminderEnabledForChat(targetChatJid, false, runtime);
+      if (!didDisable) {
+        return 'Gagal simpan tetapan timesolat.';
+      }
+
+      return `Timesolat OFF untuk ${targetLabel}.`;
+    }
+
+    return `Guna: ${commandPrefix}timesolat on | off | status`;
   }
 
   if (command === 'today') {
+    const timeZone = getCurrentTimeZone(runtime);
+    const dateContext = getDateContextInTimeZone(timeZone);
     const routes = await fetchRoutes(http);
     const details = routes.map((route) => {
       const points = Array.isArray(route.deliveryPoints) ? route.deliveryPoints : [];
-      const active = points.filter((point) => isDeliveryActiveToday(point.delivery)).length;
+      const active = points.filter((point) => isDeliveryActiveToday(point.delivery, dateContext)).length;
       return { route, total: points.length, active };
     });
 
@@ -876,7 +1294,7 @@ export async function executeCommand(text, runtime, message = null) {
     ));
     const extra = details.length > 20 ? `\n... +${details.length - 20} route lagi` : '';
 
-    return `Active Stops Today\n\n${lines.join('\n')}${extra}`;
+    return `Active Stops Today (${timeZone})\n\n${lines.join('\n')}${extra}`;
   }
 
   if (command === 'tts' || command === 'voice') {
@@ -1047,18 +1465,37 @@ export async function executeCommand(text, runtime, message = null) {
   }
 
   if (command === 'grid') {
-    const currentMedia = getMessageMedia(message);
-    if (!currentMedia || currentMedia.mediaType !== 'image') {
-      return `Sila hantar satu gambar bersama caption ${commandPrefix}grid.`;
+    const imageMedias = [];
+    const seenMediaRefs = new WeakSet();
+    const pushImageMedia = (item) => {
+      if (!item || item.mediaType !== 'image' || !item.media || typeof item.media !== 'object') return;
+      if (seenMediaRefs.has(item.media)) return;
+      seenMediaRefs.add(item.media);
+      imageMedias.push(item);
+    };
+
+    pushImageMedia(getMessageMedia(message));
+
+    const allQuotedMedia = getAllQuotedMediaMessages(message);
+    allQuotedMedia.forEach(pushImageMedia);
+
+    if (imageMedias.length === 0) {
+      return `Sila hantar gambar bersama caption ${commandPrefix}grid atau reply gambar lain untuk digabungkan.`;
     }
 
-    const imageBuffer = await quotedMediaDownloader(currentMedia.media, currentMedia.mediaType);
-
-    if (!imageBuffer) {
-      return 'Gagal memuat turun gambar untuk diproses.';
+    const imageBuffers = [];
+    for (const imageMedia of imageMedias.slice(0, 6)) {
+      const imageBuffer = await quotedMediaDownloader(imageMedia.media, imageMedia.mediaType);
+      if (imageBuffer) {
+        imageBuffers.push(imageBuffer);
+      }
     }
 
-    return buildImageGridCommandReply(imageBuffer);
+    if (imageBuffers.length === 0) {
+      return 'Gagal memuat turun gambar untuk digabungkan.';
+    }
+
+    return buildImageGridCommandReply(imageBuffers);
   }
 
   if (command === 'zip') {
@@ -1127,6 +1564,28 @@ export async function startBot(overrides = {}) {
   const runtime = { commandPrefix, allowedNumbers, http, appBaseUrl };
   const pairingMethod = await choosePairingMethod(overrides);
   const shouldDisplayQr = pairingMethod !== 'phone';
+  let prayerReminderInterval = null;
+
+  const startPrayerReminderLoop = () => {
+    if (prayerReminderInterval) return;
+
+    const runCheck = () => checkAndSendPrayerReminders(sock, runtime);
+    runCheck().catch((error) => {
+      console.warn('Prayer reminder initial check failed:', error?.message || error);
+    });
+
+    prayerReminderInterval = setInterval(() => {
+      runCheck().catch((error) => {
+        console.warn('Prayer reminder check failed:', error?.message || error);
+      });
+    }, PRAYER_REMINDER_INTERVAL_MS);
+  };
+
+  const stopPrayerReminderLoop = () => {
+    if (!prayerReminderInterval) return;
+    clearInterval(prayerReminderInterval);
+    prayerReminderInterval = null;
+  };
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
@@ -1167,10 +1626,12 @@ export async function startBot(overrides = {}) {
     if (connection === 'open') {
       onStatus?.('connected');
       console.log('WhatsApp bot connected.');
+      startPrayerReminderLoop();
     }
 
     if (connection === 'close') {
       onStatus?.('closed');
+      stopPrayerReminderLoop();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
@@ -1210,7 +1671,7 @@ export async function startBot(overrides = {}) {
         const text = getTextMessageContent(msg.message).trim();
         if (!text.startsWith(runtime.commandPrefix)) continue;
 
-        const reply = await executeCommand(text, runtime, msg.message);
+        const reply = await executeCommand(text, { ...runtime, chatJid: remoteJid }, msg.message);
         if (!reply) continue;
 
         if (typeof reply === 'string') {

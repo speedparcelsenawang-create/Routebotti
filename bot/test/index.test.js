@@ -48,6 +48,135 @@ test('normalizes phone numbers for pairing', () => {
   assert.equal(normalizePhoneNumber('+60 12-345 6789'), '60123456789');
 });
 
+test('timezone command shows current timezone', async () => {
+  const reply = await executeCommand('.timezone', {
+    commandPrefix: '.',
+    getTimeZone() {
+      return 'Asia/Kuala_Lumpur';
+    },
+  });
+
+  assert.match(String(reply), /Timezone semasa: Asia\/Kuala_Lumpur/i);
+});
+
+test('timezone command sets a valid timezone', async () => {
+  let selectedTimeZone = 'Asia/Kuala_Lumpur';
+  const reply = await executeCommand('.timezone Asia/Jakarta', {
+    commandPrefix: '.',
+    getTimeZone() {
+      return selectedTimeZone;
+    },
+    setTimeZone(nextValue) {
+      selectedTimeZone = nextValue;
+      return true;
+    },
+  });
+
+  assert.equal(selectedTimeZone, 'Asia/Jakarta');
+  assert.match(String(reply), /Timezone berjaya ditetapkan ke: Asia\/Jakarta/i);
+});
+
+test('timezone command rejects invalid timezone values', async () => {
+  let calls = 0;
+  const reply = await executeCommand('.timezone Mars/Phobos', {
+    commandPrefix: '.',
+    setTimeZone() {
+      calls += 1;
+      return true;
+    },
+  });
+
+  assert.equal(calls, 0);
+  assert.match(String(reply), /Timezone tidak sah/i);
+});
+
+test('timesolat command enables reminder for current personal chat', async () => {
+  const state = {
+    enabledChats: {},
+    lastSentByChat: {},
+  };
+
+  const reply = await executeCommand('.timesolat on', {
+    commandPrefix: '.',
+    chatJid: '60123456789@s.whatsapp.net',
+    getPrayerReminderConfig() {
+      return state;
+    },
+    setPrayerReminderConfig(nextValue) {
+      state.enabledChats = { ...nextValue.enabledChats };
+      state.lastSentByChat = { ...nextValue.lastSentByChat };
+      return true;
+    },
+  });
+
+  assert.equal(state.enabledChats['60123456789@s.whatsapp.net'], true);
+  assert.match(String(reply), /Timesolat ON/i);
+});
+
+test('timesolat command enables reminder for current group only', async () => {
+  const state = {
+    enabledChats: {},
+    lastSentByChat: {},
+  };
+
+  const groupReply = await executeCommand('.timesolat on', {
+    commandPrefix: '.',
+    chatJid: '120363111111111111@g.us',
+    getPrayerReminderConfig() {
+      return state;
+    },
+    setPrayerReminderConfig(nextValue) {
+      state.enabledChats = { ...nextValue.enabledChats };
+      state.lastSentByChat = { ...nextValue.lastSentByChat };
+      return true;
+    },
+  });
+
+  const personalStatus = await executeCommand('.timesolat status', {
+    commandPrefix: '.',
+    chatJid: '60198765432@s.whatsapp.net',
+    getPrayerReminderConfig() {
+      return state;
+    },
+  });
+
+  assert.equal(state.enabledChats['120363111111111111@g.us'], true);
+  assert.equal(state.enabledChats['60198765432@s.whatsapp.net'], undefined);
+  assert.match(String(groupReply), /group ini/i);
+  assert.match(String(personalStatus), /OFF/i);
+});
+
+test('timesolat command disables reminder for current chat', async () => {
+  const state = {
+    enabledChats: {
+      '60123456789@s.whatsapp.net': true,
+    },
+    lastSentByChat: {
+      '60123456789@s.whatsapp.net': {
+        date: '2026-07-25',
+        prayers: ['Fajr'],
+      },
+    },
+  };
+
+  const reply = await executeCommand('.timesolat off', {
+    commandPrefix: '.',
+    chatJid: '60123456789@s.whatsapp.net',
+    getPrayerReminderConfig() {
+      return state;
+    },
+    setPrayerReminderConfig(nextValue) {
+      state.enabledChats = { ...nextValue.enabledChats };
+      state.lastSentByChat = { ...nextValue.lastSentByChat };
+      return true;
+    },
+  });
+
+  assert.equal(state.enabledChats['60123456789@s.whatsapp.net'], undefined);
+  assert.equal(state.lastSentByChat['60123456789@s.whatsapp.net'], undefined);
+  assert.match(String(reply), /Timesolat OFF/i);
+});
+
 test('zip command can read quoted chat text', async () => {
   const reply = await executeCommand('.zip', {
     commandPrefix: '.',
@@ -94,7 +223,7 @@ test('zip command can read quoted media caption', async () => {
   assert.equal(unzipTextFromBase64(reply.payload), 'Teks dari media');
 });
 
-test('grid command adds grid overlay to current image', async () => {
+test('grid command builds a single-tile image when one image is provided', async () => {
   const sourceImage = await sharp({
     create: {
       width: 120,
@@ -132,6 +261,129 @@ test('grid command adds grid overlay to current image', async () => {
   assert.equal(meta.height, 720);
 });
 
+test('grid command combines current and quoted image side by side', async () => {
+  const imageA = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 0, g: 255, b: 0 },
+    },
+  }).jpeg().toBuffer();
+
+  const imageB = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 255, g: 0, b: 0 },
+    },
+  }).jpeg().toBuffer();
+
+  const reply = await executeCommand('.grid', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      if (media?.url === 'image-a') return imageA;
+      if (media?.url === 'image-b') return imageB;
+      return null;
+    },
+  }, {
+    imageMessage: {
+      caption: '.grid',
+      url: 'image-a',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'image-b',
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'image-grid');
+  assert.ok(Buffer.isBuffer(reply.imageBuffer));
+
+  const meta = await sharp(reply.imageBuffer).metadata();
+  assert.equal(meta.width, 1440);
+  assert.equal(meta.height, 720);
+});
+
+test('grid command combines 3 images with two on top and one at bottom', async () => {
+  const imageA = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 0, g: 255, b: 255 },
+    },
+  }).jpeg().toBuffer();
+
+  const imageB = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 255, g: 255, b: 0 },
+    },
+  }).jpeg().toBuffer();
+
+  const imageC = await sharp({
+    create: {
+      width: 120,
+      height: 120,
+      channels: 3,
+      background: { r: 255, g: 0, b: 255 },
+    },
+  }).jpeg().toBuffer();
+
+  const reply = await executeCommand('.grid', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+    async downloadQuotedMediaBuffer(media) {
+      if (media?.url === 'image-a') return imageA;
+      if (media?.url === 'image-b') return imageB;
+      if (media?.url === 'image-c') return imageC;
+      return null;
+    },
+  }, {
+    imageMessage: {
+      caption: '.grid',
+      url: 'image-a',
+      contextInfo: {
+        quotedMessage: {
+          imageMessage: {
+            url: 'image-b',
+            contextInfo: {
+              quotedMessage: {
+                imageMessage: {
+                  url: 'image-c',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'image-grid');
+  assert.ok(Buffer.isBuffer(reply.imageBuffer));
+
+  const meta = await sharp(reply.imageBuffer).metadata();
+  assert.equal(meta.width, 1440);
+  assert.equal(meta.height, 1440);
+});
+
 test('grid command asks for image with caption when current image is missing', async () => {
   const reply = await executeCommand('.grid', {
     commandPrefix: '.',
@@ -142,7 +394,7 @@ test('grid command asks for image with caption when current image is missing', a
     },
   });
 
-  assert.match(String(reply), /hantar satu gambar/i);
+  assert.match(String(reply), /hantar gambar/i);
 });
 
 test('sticker command asks to reply media when no quoted media', async () => {

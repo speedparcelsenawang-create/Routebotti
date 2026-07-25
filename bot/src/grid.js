@@ -1,14 +1,13 @@
 import sharp from 'sharp';
 
 const CELL_SIZE = 720;
-const GRID_LINES = 3;
-const GRID_LINE_WIDTH = 6;
-const GRID_LINE_COLOR = { r: 255, g: 255, b: 255, alpha: 0.72 };
+const MAX_IMAGES = 6;
+const BACKGROUND_COLOR = { r: 255, g: 255, b: 255, alpha: 1 };
 
-async function normalizeImageForGrid(imageBuffer) {
+async function normalizeImageForGrid(imageBuffer, width = CELL_SIZE, height = CELL_SIZE) {
   return sharp(imageBuffer)
     .rotate()
-    .resize(CELL_SIZE, CELL_SIZE, {
+    .resize(width, height, {
       fit: 'cover',
       position: 'centre',
     })
@@ -16,43 +15,109 @@ async function normalizeImageForGrid(imageBuffer) {
     .toBuffer();
 }
 
-function createGridOverlaySvg(size = CELL_SIZE) {
-  const safeSize = Math.max(100, Number(size) || CELL_SIZE);
-  const step = safeSize / GRID_LINES;
-
-  const lines = [];
-  for (let i = 1; i < GRID_LINES; i += 1) {
-    const position = Math.round(step * i);
-    lines.push(`<line x1="${position}" y1="0" x2="${position}" y2="${safeSize}"/>`);
-    lines.push(`<line x1="0" y1="${position}" x2="${safeSize}" y2="${position}"/>`);
+function buildLayoutSlots(imageCount) {
+  if (imageCount <= 1) {
+    return {
+      width: CELL_SIZE,
+      height: CELL_SIZE,
+      slots: [{ left: 0, top: 0, width: CELL_SIZE, height: CELL_SIZE }],
+    };
   }
 
-  return Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${safeSize}" height="${safeSize}" viewBox="0 0 ${safeSize} ${safeSize}">`
-      + `<g stroke="rgba(${GRID_LINE_COLOR.r},${GRID_LINE_COLOR.g},${GRID_LINE_COLOR.b},${GRID_LINE_COLOR.alpha})" stroke-width="${GRID_LINE_WIDTH}">`
-      + `${lines.join('')}`
-      + '</g>'
-      + '</svg>',
-    'utf8',
-  );
+  if (imageCount === 2) {
+    return {
+      width: CELL_SIZE * 2,
+      height: CELL_SIZE,
+      slots: [
+        { left: 0, top: 0, width: CELL_SIZE, height: CELL_SIZE },
+        { left: CELL_SIZE, top: 0, width: CELL_SIZE, height: CELL_SIZE },
+      ],
+    };
+  }
+
+  if (imageCount === 3) {
+    return {
+      width: CELL_SIZE * 2,
+      height: CELL_SIZE * 2,
+      slots: [
+        { left: 0, top: 0, width: CELL_SIZE, height: CELL_SIZE },
+        { left: CELL_SIZE, top: 0, width: CELL_SIZE, height: CELL_SIZE },
+        { left: 0, top: CELL_SIZE, width: CELL_SIZE * 2, height: CELL_SIZE },
+      ],
+    };
+  }
+
+  const rows = Math.ceil(imageCount / 2);
+  const slots = [];
+
+  for (let i = 0; i < imageCount; i += 1) {
+    const row = Math.floor(i / 2);
+    const isLastSingle = imageCount % 2 === 1 && i === imageCount - 1;
+
+    if (isLastSingle) {
+      slots.push({ left: 0, top: row * CELL_SIZE, width: CELL_SIZE * 2, height: CELL_SIZE });
+      continue;
+    }
+
+    const col = i % 2;
+    slots.push({
+      left: col * CELL_SIZE,
+      top: row * CELL_SIZE,
+      width: CELL_SIZE,
+      height: CELL_SIZE,
+    });
+  }
+
+  return {
+    width: CELL_SIZE * 2,
+    height: rows * CELL_SIZE,
+    slots,
+  };
 }
 
-export async function buildImageGridCommandReply(imageBuffer) {
-  if (!Buffer.isBuffer(imageBuffer)) {
+export async function buildImageGridCommandReply(imageBuffers) {
+  const sourceImages = Array.isArray(imageBuffers)
+    ? imageBuffers.filter((item) => Buffer.isBuffer(item))
+    : (Buffer.isBuffer(imageBuffers) ? [imageBuffers] : []);
+
+  if (sourceImages.length === 0) {
     return {
       type: 'image-grid',
       imageBuffer: null,
       mimetype: 'image/jpeg',
-      caption: 'Sila hantar satu gambar bersama caption .grid.',
+      caption: 'Sila hantar sekurang-kurangnya satu gambar bersama caption .grid.',
     };
   }
 
   try {
-    const normalizedImage = await normalizeImageForGrid(imageBuffer);
-    const gridOverlay = createGridOverlaySvg(CELL_SIZE);
+    const selectedImages = sourceImages.slice(0, MAX_IMAGES);
+    const layout = buildLayoutSlots(selectedImages.length);
 
-    const output = await sharp(normalizedImage)
-      .composite([{ input: gridOverlay, top: 0, left: 0 }])
+    const normalizedImages = await Promise.all(
+      selectedImages.map((imageBuffer, index) => {
+        const slot = layout.slots[index];
+        return normalizeImageForGrid(imageBuffer, slot.width, slot.height);
+      }),
+    );
+
+    const composites = normalizedImages.map((input, index) => {
+      const slot = layout.slots[index];
+      return {
+        input,
+        left: slot.left,
+        top: slot.top,
+      };
+    });
+
+    const output = await sharp({
+      create: {
+        width: layout.width,
+        height: layout.height,
+        channels: 4,
+        background: BACKGROUND_COLOR,
+      },
+    })
+      .composite(composites)
       .jpeg({ quality: 90 })
       .toBuffer();
 
@@ -67,7 +132,7 @@ export async function buildImageGridCommandReply(imageBuffer) {
       type: 'image-grid',
       imageBuffer: null,
       mimetype: 'image/jpeg',
-      caption: 'Gagal proses grid gambar.',
+      caption: 'Gagal gabung gambar.',
     };
   }
 }
