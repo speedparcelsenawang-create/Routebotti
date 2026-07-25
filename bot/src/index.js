@@ -11,7 +11,7 @@ import PDFDocument from 'pdfkit';
 import { buildLocationLinks as buildLocationLinksFromPoint, chunkLinksForButtons } from './link-buttons.js';
 import { buildScreenshotCommandReply } from './screenshot.js';
 import { buildTtsCommandResult } from './tts.js';
-import { buildUnzipCommandReply, buildZipMediaCommandReply, zipTextToBase64 } from './zip.js';
+import { buildUnzipCommandReply, buildZipMediaCommandReply, buildZipTextPayloadDetails } from './zip.js';
 import { buildImageGridCommandReply } from './grid.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -731,21 +731,31 @@ async function sendCommandNotFoundWithButtons(sock, jid, reply) {
   await sock.sendMessage(jid, { text: fallbackText });
 }
 
-async function sendZipTextWithCopyButton(sock, jid, payload) {
+async function sendZipTextWithCopyButton(sock, jid, payload, stats = {}) {
   const encoded = String(payload || '').trim();
+  const originalBytes = Number(stats.originalBytes) || 0;
+  const gzipBytes = Number(stats.gzipBytes) || 0;
+  const zipText = [
+    'ZIP Result (gzip+base64)',
+    `Original bytes: ${originalBytes}`,
+    `Gzip bytes: ${gzipBytes}`,
+    '',
+    encoded,
+  ].join('\n');
+
   if (!encoded) {
     await sock.sendMessage(jid, { text: 'Sila isi teks untuk di-zip.\nContoh: .zip Halo dunia' });
     return;
   }
 
   if (!useInteractiveButtons) {
-    await sock.sendMessage(jid, { text: ['ZIP', encoded].join('\n') });
+    await sock.sendMessage(jid, { text: zipText });
     return;
   }
 
   try {
     await sock.sendMessage(jid, {
-      text: ['ZIP', encoded].join('\n'),
+      text: zipText,
       footer: 'Routebot',
       interactiveButtons: [
         {
@@ -762,7 +772,7 @@ async function sendZipTextWithCopyButton(sock, jid, payload) {
     console.warn('Failed to send zip cta_copy button, fallback to text:', error);
   }
 
-  await sock.sendMessage(jid, { text: ['ZIP', encoded].join('\n') });
+  await sock.sendMessage(jid, { text: zipText });
 }
 
 export async function executeCommand(text, runtime, message = null) {
@@ -822,8 +832,8 @@ export async function executeCommand(text, runtime, message = null) {
       `${commandPrefix}pdf <text> - Hasilkan fail .pdf daripada teks`,
       `${commandPrefix}sticker - Reply gambar/video jadi sticker`,
       `${commandPrefix}sticker nobg - Reply gambar jadi sticker tanpa background`,
-      `${commandPrefix}grid - Hantar gambar kedua (caption .grid) sambil reply gambar pertama untuk gabung jadi grid`,
-      `${commandPrefix}zip <text> - Compress teks (short payload) atau reply media jadi zip file`,
+      `${commandPrefix}grid - Hantar gambar dengan caption .grid untuk tambah overlay grid`,
+      `${commandPrefix}zip <text> - Compress teks (gzip+base64) atau reply media jadi zip file`,
       `${commandPrefix}unzip <payload> - Nyahmampat payload zip text atau reply chat/media ke teks`,
       `${commandPrefix}<location_code> - Detail lokasi + gambar + link`,
       `.<location_code> - Alias lokasi guna dot (contoh: .33)`,
@@ -1039,23 +1049,16 @@ export async function executeCommand(text, runtime, message = null) {
   if (command === 'grid') {
     const currentMedia = getMessageMedia(message);
     if (!currentMedia || currentMedia.mediaType !== 'image') {
-      return `Hantar gambar kedua dengan caption ${commandPrefix}grid dan reply gambar pertama.`;
+      return `Sila hantar satu gambar bersama caption ${commandPrefix}grid.`;
     }
 
-    if (!quotedMedia || quotedMedia.mediaType !== 'image') {
-      return `Sila reply satu gambar dahulu, kemudian hantar gambar kedua dengan ${commandPrefix}grid.`;
+    const imageBuffer = await quotedMediaDownloader(currentMedia.media, currentMedia.mediaType);
+
+    if (!imageBuffer) {
+      return 'Gagal memuat turun gambar untuk diproses.';
     }
 
-    const [firstImageBuffer, secondImageBuffer] = await Promise.all([
-      quotedMediaDownloader(quotedMedia.media, quotedMedia.mediaType),
-      quotedMediaDownloader(currentMedia.media, currentMedia.mediaType),
-    ]);
-
-    if (!firstImageBuffer || !secondImageBuffer) {
-      return 'Gagal memuat turun dua gambar untuk digabungkan.';
-    }
-
-    return buildImageGridCommandReply(firstImageBuffer, secondImageBuffer);
+    return buildImageGridCommandReply(imageBuffer);
   }
 
   if (command === 'zip') {
@@ -1073,14 +1076,16 @@ export async function executeCommand(text, runtime, message = null) {
       return 'Sila isi teks untuk di-zip.\nContoh: .zip Halo dunia';
     }
 
-    const payload = zipTextToBase64(textToZip);
-    if (!payload) {
+    const zipTextResult = buildZipTextPayloadDetails(textToZip);
+    if (!zipTextResult?.payload) {
       return 'Hasil zip kosong.';
     }
 
     return {
       type: 'zip-text',
-      payload,
+      payload: zipTextResult.payload,
+      originalBytes: zipTextResult.originalBytes,
+      gzipBytes: zipTextResult.gzipBytes,
     };
   }
 
@@ -1231,7 +1236,10 @@ export async function startBot(overrides = {}) {
         }
 
         if (reply.type === 'zip-text') {
-          await sendZipTextWithCopyButton(sock, remoteJid, reply.payload);
+          await sendZipTextWithCopyButton(sock, remoteJid, reply.payload, {
+            originalBytes: reply.originalBytes,
+            gzipBytes: reply.gzipBytes,
+          });
           continue;
         }
 
@@ -1308,13 +1316,17 @@ export async function startBot(overrides = {}) {
 
         if (reply.type === 'image-grid') {
           if (reply.imageBuffer) {
+            const payload = {
+              image: reply.imageBuffer,
+              mimetype: reply.mimetype || 'image/jpeg',
+            };
+            if (reply.caption) {
+              payload.caption = reply.caption;
+            }
+
             await sock.sendMessage(
               remoteJid,
-              {
-                image: reply.imageBuffer,
-                mimetype: reply.mimetype || 'image/jpeg',
-                caption: reply.caption,
-              },
+              payload,
             );
             continue;
           }

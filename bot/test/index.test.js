@@ -94,17 +94,8 @@ test('zip command can read quoted media caption', async () => {
   assert.equal(unzipTextFromBase64(reply.payload), 'Teks dari media');
 });
 
-test('grid command combines current image with quoted image', async () => {
-  const firstImage = await sharp({
-    create: {
-      width: 120,
-      height: 120,
-      channels: 3,
-      background: { r: 255, g: 0, b: 0 },
-    },
-  }).jpeg().toBuffer();
-
-  const secondImage = await sharp({
+test('grid command adds grid overlay to current image', async () => {
+  const sourceImage = await sharp({
     create: {
       width: 120,
       height: 120,
@@ -121,34 +112,27 @@ test('grid command combines current image with quoted image', async () => {
       },
     },
     async downloadQuotedMediaBuffer(media) {
-      if (media?.url === 'quoted-image') return firstImage;
-      if (media?.url === 'current-image') return secondImage;
+      if (media?.url === 'current-image') return sourceImage;
       return null;
     },
   }, {
     imageMessage: {
       caption: '.grid',
       url: 'current-image',
-      contextInfo: {
-        quotedMessage: {
-          imageMessage: {
-            url: 'quoted-image',
-          },
-        },
-      },
     },
   });
 
   assert.equal(reply.type, 'image-grid');
   assert.ok(Buffer.isBuffer(reply.imageBuffer));
   assert.equal(reply.mimetype, 'image/jpeg');
+  assert.equal(reply.caption, undefined);
 
   const meta = await sharp(reply.imageBuffer).metadata();
-  assert.equal(meta.width, 1440);
+  assert.equal(meta.width, 720);
   assert.equal(meta.height, 720);
 });
 
-test('grid command asks to reply first image when quoted image is missing', async () => {
+test('grid command asks for image with caption when current image is missing', async () => {
   const reply = await executeCommand('.grid', {
     commandPrefix: '.',
     http: {
@@ -156,14 +140,9 @@ test('grid command asks to reply first image when quoted image is missing', asyn
         throw new Error('not used');
       },
     },
-  }, {
-    imageMessage: {
-      caption: '.grid',
-      url: 'current-image',
-    },
   });
 
-  assert.match(String(reply), /reply satu gambar/i);
+  assert.match(String(reply), /hantar satu gambar/i);
 });
 
 test('sticker command asks to reply media when no quoted media', async () => {
