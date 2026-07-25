@@ -258,3 +258,22 @@ test('unknown command returns command-not-found payload with shared web link', a
   assert.equal(reply.openInWebUrl, 'https://routebot.example.com/#page=bot-command&shared=bot-command');
   assert.match(reply.text, /Command not found\./i);
 });
+
+test('unknown command shared web link keeps subpath and opens hash page correctly', async () => {
+  const reply = await executeCommand('.doesnotexist test', {
+    commandPrefix: '.',
+    appBaseUrl: 'https://routebot.example.com/app',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'command-not-found');
+  assert.equal(reply.openInWebUrl, 'https://routebot.example.com/app/#page=bot-command&shared=bot-command');
+  assert.equal(
+    reply.text,
+    ['Command not found.', '', 'Klik button di bawah untuk lihat semua command:'].join('\n'),
+  );
+});

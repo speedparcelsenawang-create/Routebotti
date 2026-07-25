@@ -537,6 +537,9 @@ function buildSharedCommandListUrl(appBaseUrl) {
 
   try {
     const url = new URL(appBaseUrl);
+    if (!url.pathname.endsWith('/')) {
+      url.pathname = `${url.pathname}/`;
+    }
     url.hash = 'page=bot-command&shared=bot-command';
     return url.toString();
   } catch {
@@ -554,7 +557,6 @@ function buildCommandNotFoundReply(commandPrefix, appBaseUrl) {
       'Command not found.',
       '',
       'Klik button di bawah untuk lihat semua command:',
-      '[ Help ] [ Open in web ]',
     ].join('\n'),
   };
 }
