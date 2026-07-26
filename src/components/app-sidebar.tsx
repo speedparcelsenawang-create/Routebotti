@@ -1,7 +1,7 @@
 import * as React from "react"
 import {
   CalendarDays, CheckIcon, ChevronsUpDown, Cog, House, Images,
-  Moon, Package, Pencil, Sun, Users, MapPin, MessageCircle, Globe, Terminal,
+  Moon, Package, Pencil, Sun, Users, MapPin, MessageCircle, Globe, Terminal, WandSparkles,
 } from "lucide-react"
 import { LoadingSpinner } from "@/components/ui/loading"
 import {
@@ -68,6 +68,7 @@ const webNavItems = [
 const botNavItems = [
   { title: "Bot Dashboard", icon: MessageCircle, page: "bot-dashboard", iconColor: "text-green-600" },
   { title: "Command", icon: Terminal, page: "bot-command", iconColor: "text-sky-500" },
+  { title: "Custom Command", icon: WandSparkles, page: "bot-custom-command", iconColor: "text-emerald-500" },
   { title: "Bot Settings", icon: Cog, page: "bot-settings", iconColor: "text-amber-500" },
 ]
 
@@ -77,7 +78,7 @@ const settingsItems = [
 
 function getActiveDropdownOption(currentPage: string | undefined) {
   if (!currentPage) return dropdownOptions[0]
-  if (["bot-dashboard", "bot-command", "bot-settings"].includes(currentPage)) return dropdownOptions[1]
+  if (["bot-dashboard", "bot-command", "bot-custom-command", "bot-settings"].includes(currentPage)) return dropdownOptions[1]
   return dropdownOptions[0]
 }
 

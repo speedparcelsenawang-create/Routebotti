@@ -45,6 +45,14 @@ const COMMAND_ITEMS = [
     description: "Hasilkan fail teks .txt dari teks yang diberikan.",
   },
   {
+    label: ".csv <text>",
+    description: "Hasilkan fail .csv dari teks yang diberikan.",
+  },
+  {
+    label: ".md <text>",
+    description: "Hasilkan fail .md (Markdown) dari teks yang diberikan.",
+  },
+  {
     label: ".pdf <text>",
     description: "Hasilkan fail PDF dari teks yang diberikan.",
   },

@@ -720,6 +720,38 @@ test('txt command returns a text document payload', async () => {
   assert.equal(reply.mimetype, 'text/plain');
 });
 
+test('csv command returns a csv document payload', async () => {
+  const reply = await executeCommand('.csv name,phone\\nAli,60123456789', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'document');
+  assert.ok(Buffer.isBuffer(reply.document));
+  assert.equal(reply.fileName, 'document.csv');
+  assert.equal(reply.mimetype, 'text/csv');
+});
+
+test('md command returns a markdown document payload', async () => {
+  const reply = await executeCommand('.md # Laporan Hari Ini', {
+    commandPrefix: '.',
+    http: {
+      async get() {
+        throw new Error('not used');
+      },
+    },
+  });
+
+  assert.equal(reply.type, 'document');
+  assert.ok(Buffer.isBuffer(reply.document));
+  assert.equal(reply.fileName, 'document.md');
+  assert.equal(reply.mimetype, 'text/markdown');
+});
+
 test('pdf command returns a pdf document payload', async () => {
   const reply = await executeCommand('.pdf hello world', {
     commandPrefix: '.',

@@ -1185,6 +1185,8 @@ export async function executeCommand(text, runtime, message = null) {
       `${commandPrefix}vv - Hantar semula media view-once (gambar/video)`,
       `${commandPrefix}qr <text> - Hasilkan QR code PNG berkualiti tinggi`,
       `${commandPrefix}txt <text> - Hasilkan fail .txt daripada teks`,
+      `${commandPrefix}csv <text> - Hasilkan fail .csv daripada teks`,
+      `${commandPrefix}md <text> - Hasilkan fail .md daripada teks`,
       `${commandPrefix}pdf <text> - Generate PDF: reply/hantar banyak gambar (satu per page)`,
       `${commandPrefix}sticker - Reply gambar/video jadi sticker`,
       `${commandPrefix}sticker nobg - Reply gambar jadi sticker tanpa background`,
@@ -1392,6 +1394,34 @@ export async function executeCommand(text, runtime, message = null) {
       document: Buffer.from(textContent, 'utf8'),
       fileName: 'document.txt',
       mimetype: 'text/plain',
+    };
+  }
+
+  if (command === 'csv') {
+    const textContent = arg || quotedText || '';
+    if (!textContent) {
+      return `Sila isi teks untuk fail .csv. Contoh: ${commandPrefix}csv name,phone\\nAli,60123456789`;
+    }
+
+    return {
+      type: 'document',
+      document: Buffer.from(textContent, 'utf8'),
+      fileName: 'document.csv',
+      mimetype: 'text/csv',
+    };
+  }
+
+  if (command === 'md') {
+    const textContent = arg || quotedText || '';
+    if (!textContent) {
+      return `Sila isi teks untuk fail .md. Contoh: ${commandPrefix}md # Laporan Hari Ini`;
+    }
+
+    return {
+      type: 'document',
+      document: Buffer.from(textContent, 'utf8'),
+      fileName: 'document.md',
+      mimetype: 'text/markdown',
     };
   }
 

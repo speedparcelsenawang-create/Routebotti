@@ -22,6 +22,7 @@ const Rooster = lazy(() => import("@/components/Rooster").then(m => ({ default: 
 const CustomRoutePage = lazy(() => import("@/components/CustomRoutePage").then(m => ({ default: m.CustomRoutePage })))
 const BotDashboard = lazy(() => import("@/components/BotDashboard").then(m => ({ default: m.BotDashboard })))
 const BotCommand = lazy(() => import("@/components/BotCommand").then(m => ({ default: m.BotCommand })))
+const BotCustomCommand = lazy(() => import("@/components/BotCustomCommand").then(m => ({ default: m.BotCustomCommand })))
 const BotSettings = lazy(() => import("@/components/BotSettings").then(m => ({ default: m.BotSettings })))
 import { EditModeProvider } from "@/contexts/EditModeContext"
 import { DeviceProvider } from "@/contexts/DeviceContext"
@@ -80,6 +81,7 @@ function getInitialPageFromHash() {
   const hashParams = getAppHashParams()
   if (window.location.hash.startsWith("#loc=")) return "deliveries"
   if (hashParams.get("page") === "bot-command") return "bot-command"
+  if (hashParams.get("page") === "bot-custom-command") return "bot-custom-command"
   return "home"
 }
 
@@ -1847,7 +1849,7 @@ function AppContent() {
     if (page === currentPage) return
     
     // Track recently visited pages
-const trackablePages = ["route-list", "custom", "deliveries", "rooster", "plano-vm", "gallery-album", "gallery-site-images", "settings-profile", "bot-dashboard", "bot-command", "bot-settings"]
+    const trackablePages = ["route-list", "custom", "deliveries", "rooster", "plano-vm", "gallery-album", "gallery-site-images", "settings-profile", "bot-dashboard", "bot-command", "bot-custom-command", "bot-settings"]
     if (trackablePages.includes(page)) {
       addToRecent(page as any)
     }
@@ -1907,6 +1909,8 @@ const trackablePages = ["route-list", "custom", "deliveries", "rooster", "plano-
         return <BotDashboard />
       case "bot-command":
         return <BotCommand isSharedView={isSharedView} />
+      case "bot-custom-command":
+        return <BotCustomCommand />
       case "bot-settings":
         return <BotSettings />
       case "home":
@@ -1949,6 +1953,8 @@ const trackablePages = ["route-list", "custom", "deliveries", "rooster", "plano-
         return { parent: { label: contentText.breadcrumb.botWhatsApp }, current: contentText.breadcrumb.botDashboard }
       case "bot-command":
         return { parent: { label: contentText.breadcrumb.botWhatsApp }, current: "Command" }
+      case "bot-custom-command":
+        return { parent: { label: contentText.breadcrumb.botWhatsApp }, current: "Custom Command" }
       case "bot-settings":
         return { parent: { label: contentText.breadcrumb.botWhatsApp }, current: "Bot Settings" }
       case "home":
