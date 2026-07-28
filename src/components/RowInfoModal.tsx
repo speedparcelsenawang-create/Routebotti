@@ -34,6 +34,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { uploadImageToImgBB } from "@/lib/imgbb"
 
+interface QrCodeEntry {
+  imageUrl: string
+  destinationUrl: string
+}
+
 interface DeliveryPoint {
   code: string
   name: string
@@ -44,6 +49,7 @@ interface DeliveryPoint {
   markerColor?: string
   qrCodeImageUrl?: string
   qrCodeDestinationUrl?: string
+  qrCodeEntries?: QrCodeEntry[]
   avatarImageUrl?: string
   avatarImages?: string[]
 }
@@ -117,8 +123,8 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
   const [isEditing, setIsEditing] = useState(false)
   const [markerColor, setMarkerColor] = useState<string | undefined>(undefined)
   const [markerColorInput, setMarkerColorInput] = useState("")
-  const [qrCodeImageUrl, setQrCodeImageUrl] = useState("")
-  const [qrCodeDestinationUrl, setQrCodeDestinationUrl] = useState("")
+  const [qrCodeEntries, setQrCodeEntries] = useState<QrCodeEntry[]>([])
+  const [activeQrIndex, setActiveQrIndex] = useState(0)
   const [showQRDialog, setShowQRDialog] = useState(false)
   const [qrTab, setQrTab] = useState<"url" | "media">("url")
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -192,8 +198,13 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
       setDrafts(point.descriptions ?? [])
       setMarkerColor(point.markerColor)
       setMarkerColorInput(point.markerColor ?? "")
-      setQrCodeImageUrl(point.qrCodeImageUrl ?? "")
-      setQrCodeDestinationUrl(point.qrCodeDestinationUrl ?? "")
+      const normalizedEntries = Array.isArray(point.qrCodeEntries) && point.qrCodeEntries.length > 0
+        ? point.qrCodeEntries.map(entry => ({ imageUrl: entry.imageUrl ?? "", destinationUrl: entry.destinationUrl ?? "" }))
+        : (point.qrCodeImageUrl || point.qrCodeDestinationUrl
+          ? [{ imageUrl: point.qrCodeImageUrl ?? "", destinationUrl: point.qrCodeDestinationUrl ?? "" }]
+          : [])
+      setQrCodeEntries(normalizedEntries)
+      setActiveQrIndex(normalizedEntries.length > 0 ? 0 : 0)
       const imgs = point.avatarImages ?? (point.avatarImageUrl ? [point.avatarImageUrl] : [])
       setAvatarImages(imgs)
       setAvatarImageUrl(point.avatarImageUrl ?? (imgs[0] ?? noImageSrc))
@@ -270,15 +281,16 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
   const handleQrFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    const targetIndex = activeQrIndex
     setIsUploadingQR(true)
     setQrDecodeStatus("decoding")
     try {
       const url = await uploadImageToImgBB(file)
-      setQrCodeImageUrl(url)
+      updateQrEntry(targetIndex, { imageUrl: url })
       const decoded = await decodeQrFromSource(file)
       if (decoded) {
         setQrDecodeStatus("decoded")
-        setQrCodeDestinationUrl(decoded)
+        updateQrEntry(targetIndex, { destinationUrl: decoded })
       } else {
         setQrDecodeStatus("failed")
       }
@@ -291,6 +303,9 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
   }
 
   const hasCoords = point.latitude !== 0 && point.longitude !== 0
+  const qrCodeImageUrl = qrCodeEntries[activeQrIndex]?.imageUrl ?? ""
+  const qrCodeDestinationUrl = qrCodeEntries[activeQrIndex]?.destinationUrl ?? ""
+  const qrLinkEntries = qrCodeEntries.filter(entry => (entry.destinationUrl ?? "").trim())
 
   // Detect unsaved changes in the editing form
   const hasChanges = useMemo(() => {
@@ -301,22 +316,66 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
       if (filteredDrafts[i].key !== originalDescs[i]?.key || filteredDrafts[i].value !== originalDescs[i]?.value) return true
     }
     if ((markerColor ?? undefined) !== (point.markerColor ?? undefined)) return true
+
+    const originalEntries = Array.isArray(point.qrCodeEntries) && point.qrCodeEntries.length > 0
+      ? point.qrCodeEntries.map(entry => ({ imageUrl: entry.imageUrl ?? "", destinationUrl: entry.destinationUrl ?? "" }))
+      : (point.qrCodeImageUrl || point.qrCodeDestinationUrl
+        ? [{ imageUrl: point.qrCodeImageUrl ?? "", destinationUrl: point.qrCodeDestinationUrl ?? "" }]
+        : [])
+    const normalizedEntries = qrCodeEntries.filter(entry => (entry.imageUrl ?? "").trim() || (entry.destinationUrl ?? "").trim())
+    if (normalizedEntries.length !== originalEntries.length) return true
+    for (let i = 0; i < normalizedEntries.length; i++) {
+      const current = normalizedEntries[i]
+      const original = originalEntries[i]
+      if (current.imageUrl !== original.imageUrl || current.destinationUrl !== original.destinationUrl) return true
+    }
     return false
-  }, [drafts, markerColor, point.descriptions, point.markerColor])
+  }, [drafts, markerColor, point.descriptions, point.markerColor, point.qrCodeEntries, point.qrCodeImageUrl, point.qrCodeDestinationUrl, qrCodeEntries])
 
   const handleAdd = () => setDrafts(prev => [...prev, { key: "", value: "" }])
+  const handleAddQrEntry = () => {
+    if (qrCodeEntries.length >= 2) return
+    const nextEntries = [...qrCodeEntries, { imageUrl: "", destinationUrl: "" }]
+    setQrCodeEntries(nextEntries)
+    setActiveQrIndex(nextEntries.length - 1)
+    setQrTab("url")
+  }
+  const updateQrEntry = (index: number, updates: Partial<QrCodeEntry>) => {
+    setQrCodeEntries(prev => {
+      if (index < prev.length) {
+        return prev.map((entry, entryIndex) => entryIndex === index ? { ...entry, ...updates } : entry)
+      }
+
+      const nextEntry = { imageUrl: "", destinationUrl: "", ...updates }
+      const nextEntries = [...prev, nextEntry]
+      setActiveQrIndex(nextEntries.length - 1)
+      return nextEntries
+    })
+  }
+
+  const handleOpenQrDialog = () => {
+    setQrDecodeStatus("idle")
+    if (qrCodeEntries.length === 0) {
+      setQrCodeEntries([{ imageUrl: "", destinationUrl: "" }])
+      setActiveQrIndex(0)
+    }
+    setShowQRDialog(true)
+  }
+
   const handleRemove = (i: number) => setDrafts(prev => prev.filter((_, idx) => idx !== i))
   const handleChange = (i: number, field: "key" | "value", val: string) =>
     setDrafts(prev => prev.map((d, idx) => idx === i ? { ...d, [field]: val } : d))
 
   const handleSave = () => {
     try {
+      const normalizedEntries = qrCodeEntries.filter(entry => (entry.imageUrl ?? "").trim() || (entry.destinationUrl ?? "").trim())
       onSave?.({
         ...point,
         descriptions: drafts.filter(d => d.key.trim() !== ""),
         markerColor,
-        qrCodeImageUrl,
-        qrCodeDestinationUrl,
+        qrCodeImageUrl: normalizedEntries[0]?.imageUrl ?? "",
+        qrCodeDestinationUrl: normalizedEntries[0]?.destinationUrl ?? "",
+        qrCodeEntries: normalizedEntries.length > 0 ? normalizedEntries : undefined,
         avatarImageUrl,
         avatarImages,
       })
@@ -339,6 +398,13 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
     setDrafts(point.descriptions ?? [])
     setMarkerColor(point.markerColor)
     setMarkerColorInput(point.markerColor ?? "")
+    const normalizedEntries = Array.isArray(point.qrCodeEntries) && point.qrCodeEntries.length > 0
+      ? point.qrCodeEntries.map(entry => ({ imageUrl: entry.imageUrl ?? "", destinationUrl: entry.destinationUrl ?? "" }))
+      : (point.qrCodeImageUrl || point.qrCodeDestinationUrl
+        ? [{ imageUrl: point.qrCodeImageUrl ?? "", destinationUrl: point.qrCodeDestinationUrl ?? "" }]
+        : [])
+    setQrCodeEntries(normalizedEntries)
+    setActiveQrIndex(normalizedEntries.length > 0 ? 0 : 0)
     setIsEditing(false)
   }
 
@@ -686,47 +752,47 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
                 )}
 
                 {/* QR Code row — view mode, slides like other rows */}
-                {!isEditMode && qrCodeDestinationUrl && (
-                  <div className="overflow-hidden rounded-xl border border-border/80 bg-background/70 shadow-[inset_0_1px_0_hsl(var(--background)/0.7)]">
-                    <div className="transition-transform duration-200 ease-out will-change-transform" style={{ display: 'grid', gridTemplateColumns: '100% 100%', transform: pendingUrlLabel === 'QR Code' ? 'translateX(-100%)' : 'translateX(0)' }}>
-                      <button onClick={() => openUrl(qrCodeDestinationUrl, "QR Code")} className="group flex w-full items-center gap-2 bg-muted/35 px-2.5 py-0.5 transition-colors hover:bg-muted/65 active:opacity-75">
+                {!isEditMode && qrLinkEntries.length > 0 && qrLinkEntries.map((entry, index) => (
+                  <div key={`qr-${index}`} className="overflow-hidden rounded-xl border border-border/80 bg-background/70 shadow-[inset_0_1px_0_hsl(var(--background)/0.7)]">
+                    <div className="transition-transform duration-200 ease-out will-change-transform" style={{ display: 'grid', gridTemplateColumns: '100% 100%', transform: pendingUrlLabel === `QR Code ${index + 1}` ? 'translateX(-100%)' : 'translateX(0)' }}>
+                      <button onClick={() => openUrl(entry.destinationUrl, `QR Code ${index + 1}`)} className="group flex w-full items-center gap-2 bg-muted/35 px-2.5 py-0.5 transition-colors hover:bg-muted/65 active:opacity-75">
                         <QrCode className="h-5 w-5 text-orange-500 shrink-0 p-1" />
-                        <span className="flex-1 text-left text-[11px] font-semibold text-foreground">QR Code</span>
+                        <span className="flex-1 text-left text-[11px] font-semibold text-foreground">{`QR Code ${index + 1}`}</span>
                         <ChevronRight className="size-3 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors shrink-0" />
                       </button>
                       <div className="relative overflow-hidden bg-background/80">
                         <div className="absolute inset-y-0 left-0 w-1" style={{ background: 'linear-gradient(to bottom,#f97316,#ea580c)' }} />
                         <div className="flex items-center gap-2 px-3 py-1 pl-5">
                           <button
-                            onClick={() => openUrl(qrCodeDestinationUrl, "QR Code")}
+                            onClick={() => openUrl(entry.destinationUrl, `QR Code ${index + 1}`)}
                             className="flex-1 min-w-0 flex items-center gap-2.5 text-left"
                           >
                             <QrCode className="h-5 w-5 text-orange-500 shrink-0 p-1" />
-                            <p className="min-w-0 truncate text-[11px] font-semibold text-foreground leading-tight">Open QR Code?</p>
+                            <p className="min-w-0 truncate text-[11px] font-semibold text-foreground leading-tight">Open {`QR Code ${index + 1}`}?</p>
                           </button>
                           <div className="flex items-center shrink-0">
-                            <button onClick={confirmOpen} aria-label="Open QR Code URL" className="theme-accent-orange flex h-6 w-6 items-center justify-center rounded-full transition-colors active:scale-95"><ExternalLink className="h-3 w-3" /></button>
+                            <button onClick={confirmOpen} aria-label={`Open ${`QR Code ${index + 1}`} URL`} className="theme-accent-orange flex h-6 w-6 items-center justify-center rounded-full transition-colors active:scale-95"><ExternalLink className="h-3 w-3" /></button>
                           </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                )}
+                ))}
 
                 {/* QR Code — edit mode (opens settings dialog, no slide) */}
                 {isEditMode && (
                   <button
-                    onClick={() => { setQrDecodeStatus("idle"); setShowQRDialog(true) }}
+                    onClick={handleOpenQrDialog}
                     className="group flex w-full items-center gap-2 rounded-xl border border-border/80 bg-background/70 px-2.5 py-1.5 transition-all hover:bg-muted/45 active:scale-[0.98]"
                   >
                     <div className="relative flex h-6 w-6 shrink-0 items-center justify-center">
                       <QrCode className="h-3.5 w-3.5 text-orange-500" />
                       <span className="absolute -top-1 -right-1 bg-background rounded-full p-0.5 shadow-sm border border-border/40">
-                        {qrCodeImageUrl ? <Pencil className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
+                        {qrCodeEntries.length > 0 ? <Pencil className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
                       </span>
                     </div>
                     <span className="flex-1 text-left text-[11px] font-semibold text-foreground">
-                      {qrCodeImageUrl ? "Edit QR Code" : "Add QR Code"}
+                      {qrCodeEntries.length > 0 ? (qrCodeEntries.length < 2 ? "Add Another QR Code" : "Manage QR Codes") : "Add QR Code"}
                     </span>
                     <ChevronRight className="size-3.5 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors shrink-0" />
                   </button>
@@ -1094,12 +1160,42 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
                           className="h-40 w-40 rounded-lg bg-background object-contain shadow-sm"
                         />
                         <button
-                          onClick={() => { setQrCodeImageUrl(""); setQrDecodeStatus("idle"); if (fileInputRef.current) fileInputRef.current.value = "" }}
+                          onClick={() => {
+                            updateQrEntry(activeQrIndex, { imageUrl: "", destinationUrl: "" })
+                            setQrDecodeStatus("idle")
+                            if (fileInputRef.current) fileInputRef.current.value = ""
+                          }}
                           className="absolute top-2 right-2 bg-destructive text-white rounded-full p-1 hover:bg-destructive/80 transition-colors shadow"
                         >
                           <X className="w-3 h-3" />
                         </button>
                       </div>
+                    )}
+
+                    {qrCodeEntries.length > 1 && (
+                      <div className="flex flex-wrap gap-2">
+                        {qrCodeEntries.map((_entry, index) => (
+                          <button
+                            key={`qr-tab-${index}`}
+                            type="button"
+                            onClick={() => setActiveQrIndex(index)}
+                            className={`rounded-full px-2.5 py-1 text-[10px] font-semibold transition-colors ${activeQrIndex === index ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                          >
+                            QR {index + 1}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {qrCodeEntries.length < 2 && (
+                      <button
+                        type="button"
+                        onClick={handleAddQrEntry}
+                        className="flex items-center gap-2 text-[11px] font-semibold text-primary"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add another QR Code
+                      </button>
                     )}
 
                     {/* Tabs */}
@@ -1122,7 +1218,7 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
                     {qrTab === "url" && (
                       <div className="space-y-1.5">
                         <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">QR Image URL</label>
-                        <Input value={qrCodeImageUrl} onChange={e => setQrCodeImageUrl(e.target.value)}
+                        <Input value={qrCodeImageUrl} onChange={e => updateQrEntry(activeQrIndex, { imageUrl: e.target.value, destinationUrl: qrCodeDestinationUrl })}
                           placeholder="https://example.com/qr.png" className="h-9 text-[11px] md:text-[11px]" />
                       </div>
                     )}
@@ -1180,7 +1276,7 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
                           <span className="rounded-md bg-[hsl(var(--accent-emerald)/0.12)] px-1.5 py-0.5 text-[10px] font-semibold text-[hsl(var(--accent-emerald))]">Auto-filled ✓</span>
                         )}
                       </div>
-                      <Input value={qrCodeDestinationUrl} onChange={e => setQrCodeDestinationUrl(e.target.value)}
+                      <Input value={qrCodeDestinationUrl} onChange={e => updateQrEntry(activeQrIndex, { imageUrl: qrCodeImageUrl, destinationUrl: e.target.value })}
                         placeholder="https://example.com/destination" className="h-9 text-[11px] md:text-[11px]" />
                     </div>
                   </>
@@ -1189,19 +1285,25 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
                 {/* ── VIEW MODE ── */}
                 {!isEditMode && (
                   <div className="space-y-3">
-                    {qrCodeImageUrl && (
-                      <div className="flex justify-center p-3 bg-muted/40 rounded-2xl border border-border">
-                        <img src={qrCodeImageUrl} alt="QR Code"
-                          className="h-44 w-44 rounded-lg bg-background object-contain shadow-sm"
-                        />
-                      </div>
-                    )}
-                    {qrCodeDestinationUrl ? (
-                      <div className="bg-muted/50 rounded-xl border border-border px-4 py-3 space-y-1">
-                        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Destination URL</p>
-                        <p className="text-xs font-mono break-all text-foreground leading-relaxed">{qrCodeDestinationUrl}</p>
-                      </div>
-                    ) : !qrCodeImageUrl && (
+                    {qrCodeEntries.length > 0 ? (
+                      qrCodeEntries.map((entry, index) => (
+                        <div key={`qr-view-${index}`} className="space-y-2 rounded-2xl border border-border bg-muted/30 p-3">
+                          {entry.imageUrl && (
+                            <div className="flex justify-center">
+                              <img src={entry.imageUrl} alt={`QR Code ${index + 1}`}
+                                className="h-40 w-40 rounded-lg bg-background object-contain shadow-sm"
+                              />
+                            </div>
+                          )}
+                          {entry.destinationUrl ? (
+                            <div className="bg-background/70 rounded-xl border border-border px-4 py-3 space-y-1">
+                              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{`Destination URL ${index + 1}`}</p>
+                              <p className="text-xs font-mono break-all text-foreground leading-relaxed">{entry.destinationUrl}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
                       <div className="flex flex-col items-center gap-2 py-6 text-center">
                         <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center">
                           <QrCode className="w-6 h-6 text-muted-foreground/50" />

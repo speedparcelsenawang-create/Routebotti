@@ -1180,6 +1180,23 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
     setSelectedPoint(point)
   }, [])
 
+  const handleRowInfoModalSave = useCallback((updatedPoint: DeliveryPoint) => {
+    setHasUnsavedChanges(true)
+    setRoutes(prev => prev.map(route => {
+      if (route.id !== currentRouteId) return route
+
+      const nextPoints = getRouteDeliveryPoints(route).map(point =>
+        point.code === updatedPoint.code ? updatedPoint : point
+      )
+
+      return {
+        ...route,
+        deliveryPoints: nextPoints,
+      }
+    }))
+    setSelectedPoint(updatedPoint)
+  }, [currentRouteId, setHasUnsavedChanges])
+
   const handleDetailDialogInteractOutside = useCallback((event: Event) => {
     const target = event.target as HTMLElement | null
     if (!target) return
@@ -4574,7 +4591,9 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
                     open={!!selectedPoint}
                     onOpenChange={(open) => { if (!open) setSelectedPoint(null) }}
                     point={selectedPoint}
-                    isEditMode={false}
+                    isEditMode={isEditMode}
+                    allowMarkerColorEdit={isEditMode}
+                    onSave={handleRowInfoModalSave}
                     overlayClassName="bg-black/55"
                   />
                 )}
