@@ -118,6 +118,120 @@ const createVideoDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file)
   })
 
+const blobToImageElement = async (blob: Blob): Promise<HTMLImageElement> => {
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const image = new Image()
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error("Failed to load image for QR decode"))
+      image.src = objectUrl
+    })
+    return image
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+const clampChannel = (value: number) => Math.max(0, Math.min(255, value))
+
+const buildQrEnhancedCanvases = async (source: string | Blob): Promise<HTMLCanvasElement[]> => {
+  if (typeof source === "string") return []
+
+  let image: HTMLImageElement
+  try {
+    image = await blobToImageElement(source)
+  } catch {
+    return []
+  }
+
+  const width = image.naturalWidth || image.width
+  const height = image.naturalHeight || image.height
+  if (!width || !height) return []
+
+  const scale = Math.min(3, Math.max(1, 1024 / Math.min(width, height)))
+  const targetWidth = Math.max(1, Math.round(width * scale))
+  const targetHeight = Math.max(1, Math.round(height * scale))
+
+  const baseCanvas = document.createElement("canvas")
+  baseCanvas.width = targetWidth
+  baseCanvas.height = targetHeight
+  const baseCtx = baseCanvas.getContext("2d", { willReadFrequently: true })
+  if (!baseCtx) return []
+
+  baseCtx.imageSmoothingEnabled = false
+  baseCtx.drawImage(image, 0, 0, targetWidth, targetHeight)
+
+  const enhancedCanvas = document.createElement("canvas")
+  enhancedCanvas.width = targetWidth
+  enhancedCanvas.height = targetHeight
+  const enhancedCtx = enhancedCanvas.getContext("2d", { willReadFrequently: true })
+  if (!enhancedCtx) return [baseCanvas]
+
+  enhancedCtx.drawImage(baseCanvas, 0, 0)
+  const imageData = enhancedCtx.getImageData(0, 0, targetWidth, targetHeight)
+  const pixels = imageData.data
+
+  for (let i = 0; i < pixels.length; i += 4) {
+    const r = pixels[i]
+    const g = pixels[i + 1]
+    const b = pixels[i + 2]
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    const boosted = (luminance - 128) * 1.7 + 128
+    const bw = boosted > 135 ? 255 : 0
+    pixels[i] = bw
+    pixels[i + 1] = bw
+    pixels[i + 2] = bw
+  }
+  enhancedCtx.putImageData(imageData, 0, 0)
+
+  const sharpenCanvas = document.createElement("canvas")
+  sharpenCanvas.width = targetWidth
+  sharpenCanvas.height = targetHeight
+  const sharpenCtx = sharpenCanvas.getContext("2d", { willReadFrequently: true })
+  if (!sharpenCtx) return [baseCanvas, enhancedCanvas]
+
+  sharpenCtx.drawImage(baseCanvas, 0, 0)
+  const src = sharpenCtx.getImageData(0, 0, targetWidth, targetHeight)
+  const dst = sharpenCtx.createImageData(targetWidth, targetHeight)
+  const srcData = src.data
+  const dstData = dst.data
+
+  const kernel = [
+    0, -1, 0,
+    -1, 5, -1,
+    0, -1, 0,
+  ]
+
+  for (let y = 1; y < targetHeight - 1; y++) {
+    for (let x = 1; x < targetWidth - 1; x++) {
+      const idx = (y * targetWidth + x) * 4
+      let rr = 0
+      let gg = 0
+      let bb = 0
+
+      let kernelIndex = 0
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const sampleIndex = ((y + ky) * targetWidth + (x + kx)) * 4
+          const weight = kernel[kernelIndex++]
+          rr += srcData[sampleIndex] * weight
+          gg += srcData[sampleIndex + 1] * weight
+          bb += srcData[sampleIndex + 2] * weight
+        }
+      }
+
+      dstData[idx] = clampChannel(rr)
+      dstData[idx + 1] = clampChannel(gg)
+      dstData[idx + 2] = clampChannel(bb)
+      dstData[idx + 3] = srcData[idx + 3]
+    }
+  }
+
+  sharpenCtx.putImageData(dst, 0, 0)
+  return [baseCanvas, enhancedCanvas, sharpenCanvas]
+}
+
 export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarkerColorEdit = false, onSave, overlayClassName }: RowInfoModalProps) {
   const [drafts, setDrafts] = useState<{ key: string; value: string }[]>([])
   const [isEditing, setIsEditing] = useState(false)
@@ -267,14 +381,54 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
   const [isUploadingQR, setIsUploadingQR] = useState(false)
   const [qrDecodeStatus, setQrDecodeStatus] = useState<"idle" | "decoding" | "decoded" | "failed">("idle")
 
-  // Decode QR code from a data URL or Blob using qr-scanner
-  const decodeQrFromSource = async (source: string | Blob): Promise<string | null> => {
-    try {
-      const result = await QrScanner.scanImage(source, { returnDetailedScanResult: true })
-      return result.data ?? null
-    } catch {
-      return null
+  const normalizeDecodedQrText = (value: unknown): string | null => {
+    if (typeof value === "string") {
+      const trimmed = value.trim()
+      return trimmed.length > 0 ? trimmed : null
     }
+    if (value && typeof value === "object" && "data" in value) {
+      const data = (value as { data?: unknown }).data
+      if (typeof data === "string") {
+        const trimmed = data.trim()
+        return trimmed.length > 0 ? trimmed : null
+      }
+    }
+    return null
+  }
+
+  // Decode QR code from URL or Blob using qr-scanner with fallback strategies
+  const decodeQrFromSource = async (source: string | Blob): Promise<string | null> => {
+    const attempts: Array<{ returnDetailedScanResult: true; inversionMode: "original" | "invert" | "both"; alsoTryWithoutScanRegion: boolean }> = [
+      { returnDetailedScanResult: true, inversionMode: "both", alsoTryWithoutScanRegion: true },
+      { returnDetailedScanResult: true, inversionMode: "original", alsoTryWithoutScanRegion: true },
+      { returnDetailedScanResult: true, inversionMode: "invert", alsoTryWithoutScanRegion: true },
+    ]
+
+    const scanCandidates: Array<string | Blob | HTMLCanvasElement> = [source]
+    const enhancedCanvases = await buildQrEnhancedCanvases(source)
+    scanCandidates.push(...enhancedCanvases)
+
+    for (const candidate of scanCandidates) {
+      for (const options of attempts) {
+        try {
+          const result = await QrScanner.scanImage(candidate, options)
+          const decoded = normalizeDecodedQrText(result)
+          if (decoded) return decoded
+        } catch {
+          // Try the next strategy before giving up.
+        }
+      }
+
+      try {
+        const plainResult = await QrScanner.scanImage(candidate)
+        const decoded = normalizeDecodedQrText(plainResult)
+        if (decoded) return decoded
+      } catch {
+        // Ignore and continue.
+      }
+    }
+
+    return null
   }
 
   // Upload QR image file → ImgBB (no base64 bloat in DB)
@@ -287,7 +441,7 @@ export function RowInfoModal({ open, onOpenChange, point, isEditMode, allowMarke
     try {
       const url = await uploadImageToImgBB(file)
       updateQrEntry(targetIndex, { imageUrl: url })
-      const decoded = await decodeQrFromSource(file)
+      const decoded = await decodeQrFromSource(file) ?? await decodeQrFromSource(url)
       if (decoded) {
         setQrDecodeStatus("decoded")
         updateQrEntry(targetIndex, { destinationUrl: decoded })

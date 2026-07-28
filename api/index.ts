@@ -711,6 +711,104 @@ async function handleRoutes(req: VercelRequest, res: VercelResponse) {
   return res.status(405).json({ success: false, error: `Method ${req.method} tidak dibenarkan` });
 }
 
+// ── /api/custom-commands ─────────────────────────────────────────────────────
+async function handleCustomCommands(req: VercelRequest, res: VercelResponse) {
+  if (!sql) {
+    return res.status(500).json({ success: false, error: 'DATABASE_URL not configured' });
+  }
+
+  await sql`CREATE TABLE IF NOT EXISTS bot_custom_commands (
+    id TEXT PRIMARY KEY,
+    trigger TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    media_url TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    buttons JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  )`;
+
+  if (req.method === 'GET') {
+    const rows = await sql`SELECT id, trigger, title, content_type, message, media_url, file_name, buttons, created_at
+                           FROM bot_custom_commands
+                           ORDER BY created_at DESC`;
+
+    const data = rows.map((row: Record<string, unknown>) => ({
+      id: String(row.id ?? ''),
+      trigger: String(row.trigger ?? ''),
+      title: String(row.title ?? ''),
+      contentType: String(row.content_type ?? 'text'),
+      message: String(row.message ?? ''),
+      mediaUrl: String(row.media_url ?? ''),
+      fileName: String(row.file_name ?? ''),
+      buttons: Array.isArray(row.buttons) ? row.buttons : [],
+      createdAt: row.created_at,
+    }));
+
+    return res.status(200).json({ success: true, data });
+  }
+
+  if (req.method === 'POST') {
+    const {
+      id,
+      trigger,
+      title,
+      contentType,
+      message,
+      mediaUrl,
+      fileName,
+      buttons,
+      createdAt,
+    } = req.body ?? {};
+
+    if (!id || !trigger || !title || !contentType) {
+      return res.status(400).json({ success: false, error: 'id, trigger, title, contentType diperlukan' });
+    }
+
+    const normalizedButtons = Array.isArray(buttons) ? buttons : [];
+
+    await sql`
+      INSERT INTO bot_custom_commands (id, trigger, title, content_type, message, media_url, file_name, buttons, created_at, updated_at)
+      VALUES (
+        ${String(id)},
+        ${String(trigger)},
+        ${String(title)},
+        ${String(contentType)},
+        ${String(message ?? '')},
+        ${String(mediaUrl ?? '')},
+        ${String(fileName ?? '')},
+        ${JSON.stringify(normalizedButtons)},
+        ${createdAt ? String(createdAt) : new Date().toISOString()},
+        NOW()
+      )
+      ON CONFLICT (id) DO UPDATE
+      SET trigger = EXCLUDED.trigger,
+          title = EXCLUDED.title,
+          content_type = EXCLUDED.content_type,
+          message = EXCLUDED.message,
+          media_url = EXCLUDED.media_url,
+          file_name = EXCLUDED.file_name,
+          buttons = EXCLUDED.buttons,
+          updated_at = NOW()`;
+
+    return res.status(200).json({ success: true });
+  }
+
+  if (req.method === 'DELETE') {
+    const { id } = req.query;
+    if (!id || typeof id !== 'string') {
+      return res.status(400).json({ success: false, error: 'id diperlukan' });
+    }
+
+    await sql`DELETE FROM bot_custom_commands WHERE id = ${id}`;
+    return res.status(200).json({ success: true });
+  }
+
+  return res.status(405).json({ success: false, error: `Method ${req.method} tidak dibenarkan` });
+}
+
 // ── Main router ───────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
@@ -735,6 +833,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       case 'road-distance': return await handleRoadDistance(req, res);
       case 'whatsapp':      return await handleWhatsApp(req, res);
       case 'routes':        return await handleRoutes(req, res);
+      case 'custom-commands': return await handleCustomCommands(req, res);
       default:
         return res.status(404).json({ success: false, error: `Unknown endpoint: /api/${segment}` });
     }

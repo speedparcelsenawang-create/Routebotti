@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Plus, Trash2, WandSparkles, TerminalSquare, MessageSquareText, Save, Upload, Link2, Loader2, FileText } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -85,6 +85,15 @@ function loadCommands(): CustomCommand[] {
   }
 }
 
+async function fetchCommandsFromApi(): Promise<CustomCommand[]> {
+  const response = await fetch('/api/custom-commands')
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.success || !Array.isArray(payload?.data)) {
+    throw new Error(payload?.error ?? 'Failed to load custom commands')
+  }
+  return payload.data as CustomCommand[]
+}
+
 export function BotCustomCommand() {
   const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const [commands, setCommands] = useState<CustomCommand[]>(() => loadCommands())
@@ -97,6 +106,8 @@ export function BotCustomCommand() {
   const [uploadedMediaDataUrl, setUploadedMediaDataUrl] = useState("")
   const [uploadedFileName, setUploadedFileName] = useState("")
   const [isReadingUpload, setIsReadingUpload] = useState(false)
+  const [isSavingCommand, setIsSavingCommand] = useState(false)
+  const [isLoadingCommands, setIsLoadingCommands] = useState(true)
   const [fileName, setFileName] = useState("")
   const [buttons, setButtons] = useState<CommandButton[]>([])
 
@@ -109,6 +120,33 @@ export function BotCustomCommand() {
     setCommands(next)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   }
+
+  useEffect(() => {
+    let cancelled = false
+
+    const load = async () => {
+      setIsLoadingCommands(true)
+      try {
+        const remoteCommands = await fetchCommandsFromApi()
+        if (cancelled) return
+        persist(remoteCommands)
+      } catch (error) {
+        if (cancelled) return
+        const fallback = loadCommands()
+        setCommands(fallback)
+        toast.error('Gagal sync custom command dari server', {
+          description: error instanceof Error ? error.message : 'Fallback ke data lokal browser.',
+        })
+      } finally {
+        if (!cancelled) setIsLoadingCommands(false)
+      }
+    }
+
+    load().catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const addButton = () => {
     setButtons((prev) => [...prev, createButton()])
@@ -197,7 +235,7 @@ export function BotCustomCommand() {
     return null
   }
 
-  const saveCommand = () => {
+  const saveCommand = async () => {
     const error = validate()
     if (error) {
       toast.error(error)
@@ -219,15 +257,49 @@ export function BotCustomCommand() {
       createdAt: new Date().toISOString(),
     }
 
-    const next = [payload, ...commands]
-    persist(next)
-    toast.success("Custom command disimpan")
+    setIsSavingCommand(true)
+    try {
+      const response = await fetch('/api/custom-commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.error ?? 'Gagal simpan custom command')
+      }
+
+      const next = [payload, ...commands]
+      persist(next)
+      toast.success("Custom command disimpan")
+    } catch (saveError) {
+      toast.error('Gagal simpan command ke server', {
+        description: saveError instanceof Error ? saveError.message : 'Sila cuba lagi.',
+      })
+      return
+    } finally {
+      setIsSavingCommand(false)
+    }
   }
 
-  const deleteCommand = (id: string) => {
-    const next = commands.filter((item) => item.id !== id)
-    persist(next)
-    toast.success("Custom command dipadam")
+  const deleteCommand = async (id: string) => {
+    try {
+      const response = await fetch(`/api/custom-commands?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.error ?? 'Gagal padam custom command')
+      }
+
+      const next = commands.filter((item) => item.id !== id)
+      persist(next)
+      toast.success("Custom command dipadam")
+    } catch (deleteError) {
+      toast.error('Gagal padam command', {
+        description: deleteError instanceof Error ? deleteError.message : 'Sila cuba lagi.',
+      })
+    }
   }
 
   return (
@@ -438,7 +510,7 @@ export function BotCustomCommand() {
 
             <div className="flex flex-wrap gap-2 justify-end">
               <Button type="button" variant="outline" onClick={resetForm}>Reset</Button>
-              <Button type="button" className="gap-1.5" onClick={saveCommand}>
+              <Button type="button" className="gap-1.5" onClick={() => { void saveCommand() }} disabled={isSavingCommand}>
                 <Save className="size-4" /> Save Command
               </Button>
             </div>
@@ -451,7 +523,9 @@ export function BotCustomCommand() {
             </div>
 
             <div className="space-y-2 overflow-auto max-h-[620px] pr-1">
-              {commands.length === 0 ? (
+              {isLoadingCommands ? (
+                <p className="text-[11px] text-muted-foreground">Loading commands...</p>
+              ) : commands.length === 0 ? (
                 <p className="text-[11px] text-muted-foreground">Tiada custom command lagi. Simpan command pertama anda.</p>
               ) : (
                 commands.map((item) => (
