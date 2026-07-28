@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { useRoadDistances } from "@/hooks/use-road-distances"
 import { useRegisterRefresh } from "@/contexts/RefreshContext"
-import { ClipboardList, List, Info, Plus, Check, X, Edit2, Trash2, Search, Save, ArrowUp, ArrowDown, Truck, Cog, CheckCircle2, MapPin, Route, AlertCircle, History, MapPinned, TableProperties, Shrink, Expand, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft, ChevronRight, RotateCcw, Layers, GripVertical, Columns, ArrowUpDown, Eye, EyeOff, Lock, Navigation2, Map as MapIcon, SlidersHorizontal, Share2, Copy, Check as CheckIcon, ExternalLink, MessageCircle } from "lucide-react"
+import { ClipboardList, List, Info, Plus, Check, X, Edit2, Trash2, Search, Save, ArrowUp, ArrowDown, Truck, Cog, CheckCircle2, MapPin, Route, AlertCircle, History, MapPinned, TableProperties, Shrink, Expand, ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft, ChevronRight, RotateCcw, Layers, GripVertical, Columns, ArrowUpDown, Eye, EyeOff, Lock, Navigation2, Map as MapIcon, SlidersHorizontal, Share2, Copy, Check as CheckIcon, ExternalLink, MessageCircle, Locate } from "lucide-react"
 import { cn, parseSmartQuery, isDeliveryActive } from "@/lib/utils"
 import { optimizeRouteOrder } from "@/lib/route-optimizer"
 import { toast } from "sonner"
@@ -1300,6 +1300,7 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
   })
   const [draftCoordinates, setDraftCoordinates] = useState<Record<string, { lat: string; lng: string }>>({})
   const [coordinateBaseline, setCoordinateBaseline] = useState<Record<string, { lat: string; lng: string }>>({})
+  const [expandedCoordCode, setExpandedCoordCode] = useState<string | null>(null)
   const [sortConflictPending, setSortConflictPending] = useState<SortType | null>(null)
 
   const openRouteDetail = useCallback((routeId: string) => {
@@ -5615,110 +5616,152 @@ export function RouteList({ variant = 'route-list' }: RouteListProps) {
                 </div>
               </div>
             ) : (
-              <div className="h-full min-h-0 flex flex-col gap-3">
-                <div className="flex items-start gap-3 bg-amber-500 dark:bg-amber-600 rounded-xl p-4 shrink-0 text-white">
-                  <div className="w-7 h-7 rounded-lg bg-white/20 flex items-center justify-center shrink-0 mt-0.5">
-                    <Lock className="w-3.5 h-3.5 text-white" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold">Edit Mode required</p>
-                    <p className="text-xs text-white/90 mt-0.5 leading-relaxed">
-                      {isEditMode
-                        ? 'Edit Mode is active. You can modify coordinates below.'
-                        : 'Enable Edit Mode on the map to modify delivery point coordinates.'}
+              <div className="h-full min-h-0 flex flex-col overflow-hidden">
+                {/* Edit mode notice */}
+                {isEditMode ? (
+                  <div className="flex-shrink-0 bg-emerald-50 dark:bg-emerald-950/30 border-b border-emerald-100 dark:border-emerald-900 px-4 py-2.5 flex items-start gap-2.5">
+                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-emerald-800 dark:text-emerald-300 leading-snug">
+                      Edit Mode active. Tap a stop to edit its coordinates.
                     </p>
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Navigation2 className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Delivery Points</span>
+                ) : (
+                  <div className="flex-shrink-0 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-100 dark:border-amber-900 px-4 py-2.5 flex items-start gap-2.5">
+                    <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-800 dark:text-amber-300 leading-snug">
+                      Enable Edit Mode on the map to modify delivery point coordinates.
+                    </p>
                   </div>
-                </div>
-                {/* Header row */}
-                <div className="grid grid-cols-[1fr_106px_106px_54px] gap-2 px-2 py-2 items-center border-b border-border/40">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center flex items-center justify-center">Location</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center flex items-center justify-center">Latitude</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center flex items-center justify-center">Longitude</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center flex items-center justify-center">Act</span>
-                </div>
-                <div className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-1">
+                )}
+                {/* Expandable list */}
+                <div className="flex-1 overflow-y-auto divide-y divide-border">
                   {deliveryPoints
                     .slice()
                     .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true, sensitivity: 'base' }))
                     .map(point => {
-                      const draftCoordinate = draftCoordinates[point.code]
-                      const baselineCoordinate = coordinateBaseline[point.code]
-                      const hasDraftCoordinateChange = !!draftCoordinate && !!baselineCoordinate && (
-                        draftCoordinate.lat !== baselineCoordinate.lat || draftCoordinate.lng !== baselineCoordinate.lng
-                      )
-                      const hasPendingCoordinate =
-                        hasDraftCoordinateChange
-                        || pendingCellEdits.has(`${point.code}-latitude`)
-                        || pendingCellEdits.has(`${point.code}-longitude`)
+                      const draftLat = draftCoordinates[point.code]?.lat ?? formatCoordinateInput(point.latitude)
+                      const draftLng = draftCoordinates[point.code]?.lng ?? formatCoordinateInput(point.longitude)
+                      const baselineLat = coordinateBaseline[point.code]?.lat ?? formatCoordinateInput(point.latitude)
+                      const baselineLng = coordinateBaseline[point.code]?.lng ?? formatCoordinateInput(point.longitude)
+                      const isChanged = draftLat !== baselineLat || draftLng !== baselineLng
+                      const isExpanded = expandedCoordCode === point.code
 
                       return (
                         <div
                           key={point.code}
-                          className={`grid grid-cols-[1fr_106px_106px_54px] items-center gap-2 rounded-lg border px-3 py-2 ${
-                            hasPendingCoordinate
-                              ? 'border-amber-400/50 bg-amber-50/40 dark:bg-amber-900/10'
-                              : 'border-border bg-background'
-                          }`}
+                          className={`transition-colors ${isExpanded ? 'bg-blue-50/60 dark:bg-blue-950/20 border-l-[3px] border-l-blue-500' : 'border-l-[3px] border-l-transparent hover:bg-muted/40'}`}
                         >
-                          <div className="min-w-0 flex flex-col items-center justify-center text-center">
-                            <p className="text-[10px] font-semibold truncate leading-tight w-full">{point.name || '-'}</p>
-                            <p className="text-[9px] text-muted-foreground mt-0.5">{point.code}</p>
-                          </div>
-                          <Input
-                            type="number"
-                            step="0.000001"
-                            value={draftCoordinates[point.code]?.lat ?? ''}
-                            onChange={(e) => {
-                              setDraftCoordinates((prev) => ({
-                                ...prev,
-                                [point.code]: {
-                                  lat: e.target.value,
-                                  lng: prev[point.code]?.lng ?? formatCoordinateInput(point.longitude),
-                                },
-                              }))
-                            }}
-                            disabled={!isEditMode}
-                            className="h-7 text-[10px] px-2 text-center mx-auto"
-                            placeholder="0.000000"
-                          />
-                          <Input
-                            type="number"
-                            step="0.000001"
-                            value={draftCoordinates[point.code]?.lng ?? ''}
-                            onChange={(e) => {
-                              setDraftCoordinates((prev) => ({
-                                ...prev,
-                                [point.code]: {
-                                  lat: prev[point.code]?.lat ?? formatCoordinateInput(point.latitude),
-                                  lng: e.target.value,
-                                },
-                              }))
-                            }}
-                            disabled={!isEditMode}
-                            className="h-7 text-[10px] px-2 text-center mx-auto"
-                            placeholder="0.000000"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            onClick={() => useCurrentLocationForSingleCoordinateDraft(point)}
-                            disabled={!isEditMode || isLocatingSingleCoordinateCode === point.code}
-                            className="h-7 w-7 rounded-md p-0 mx-auto"
-                            title="Use current location for this point"
+                          {/* Collapsed row — always visible */}
+                          <div
+                            className="px-4 py-3 cursor-pointer flex items-center justify-between gap-3 select-none"
+                            onClick={() => setExpandedCoordCode(isExpanded ? null : point.code)}
                           >
-                            {isLocatingSingleCoordinateCode === point.code ? (
-                              <span className="text-[10px] font-semibold">…</span>
-                            ) : (
-                              <MapPin className="size-3.5" />
-                            )}
-                          </Button>
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="flex-shrink-0 w-7 h-7 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground">
+                                {point.code}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium text-foreground truncate">{point.name || point.code}</span>
+                                  {isChanged && !isExpanded && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" title="Unsaved changes" />
+                                  )}
+                                </div>
+                                {!isExpanded && (
+                                  <div className="flex items-center gap-1 mt-0.5">
+                                    <MapPin className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                                    <span className="text-[11px] text-muted-foreground font-mono truncate">
+                                      {draftLat}, {draftLng}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            {isExpanded
+                              ? <ChevronDown className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                              : <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                            }
+                          </div>
+
+                          {/* Expanded inputs */}
+                          <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? 'max-h-56' : 'max-h-0'}`}>
+                            <div className="px-4 pb-4 pt-1">
+                              {isChanged && (
+                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 mb-3">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                  Modified
+                                </span>
+                              )}
+                              <div className="flex gap-3 mb-3">
+                                <div className="flex-1">
+                                  <label className="block text-[11px] font-medium text-muted-foreground mb-1">Latitude</label>
+                                  <Input
+                                    type="number"
+                                    step="0.000001"
+                                    value={draftLat}
+                                    onChange={(e) => {
+                                      setDraftCoordinates(prev => ({
+                                        ...prev,
+                                        [point.code]: {
+                                          lat: e.target.value,
+                                          lng: prev[point.code]?.lng ?? formatCoordinateInput(point.longitude),
+                                        },
+                                      }))
+                                    }}
+                                    disabled={!isEditMode}
+                                    className="h-9 text-xs px-3 font-mono"
+                                    placeholder="0.000000"
+                                  />
+                                </div>
+                                <div className="flex-1">
+                                  <label className="block text-[11px] font-medium text-muted-foreground mb-1">Longitude</label>
+                                  <Input
+                                    type="number"
+                                    step="0.000001"
+                                    value={draftLng}
+                                    onChange={(e) => {
+                                      setDraftCoordinates(prev => ({
+                                        ...prev,
+                                        [point.code]: {
+                                          lat: prev[point.code]?.lat ?? formatCoordinateInput(point.latitude),
+                                          lng: e.target.value,
+                                        },
+                                      }))
+                                    }}
+                                    disabled={!isEditMode}
+                                    className="h-9 text-xs px-3 font-mono"
+                                    placeholder="0.000000"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => useCurrentLocationForSingleCoordinateDraft(point)}
+                                  disabled={!isEditMode || isLocatingSingleCoordinateCode === point.code}
+                                  className="h-8 px-3 text-xs gap-1.5 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 hover:bg-blue-100 dark:hover:bg-blue-900/40"
+                                >
+                                  {isLocatingSingleCoordinateCode === point.code ? (
+                                    <span>Detecting…</span>
+                                  ) : (
+                                    <>
+                                      <Locate className="w-3.5 h-3.5" />
+                                      Detect Location
+                                    </>
+                                  )}
+                                </Button>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedCoordCode(null)}
+                                  className="text-xs text-muted-foreground hover:text-foreground px-3 h-8 rounded-md hover:bg-muted/50 transition-colors"
+                                >
+                                  Done
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       )
                     })}
